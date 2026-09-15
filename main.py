@@ -7,14 +7,16 @@ import yfinance as yf
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
+TELEGRAM_TOKEN = "8874815036:AAF26vD-5gVypsXwLzZTNZ1AeCom3FGMZUI"
 TELEGRAM_CHAT_ID = "7889527038"
+BOT_PASSCODE = "5051"  # Change this to your preferred secret passcode
 
 SYMBOL_WEEKDAY = "GC=F"    # Gold Futures Ticker (XAUUSD)
 SYMBOL_WEEKEND = "BTC-USD" # Active weekend asset option
 TIMEFRAME = "15m"
 
 last_signal = None
+authorized_users = set()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
@@ -51,7 +53,18 @@ def get_signal(ticker):
     return sig, close, sl, tp
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🟢 APA Signal Bot is running 24/7!")
+    user_id = update.effective_user.id
+    
+    # Check if the user passed the correct passcode e.g., /start 1234
+    if context.args and context.args[0] == BOT_PASSCODE:
+        authorized_users.add(user_id)
+        await update.message.reply_text("🔓 Passcode accepted! APA Signal Bot is active for you.")
+        return
+
+    if user_id in authorized_users:
+        await update.message.reply_text("🟢 APA Signal Bot is active and monitoring markets!")
+    else:
+        await update.message.reply_text("🔒 Access Denied! Please enter the correct passcode:\nUsage: `/start <passcode>`", parse_mode="Markdown")
 
 async def signal_loop(app):
     global last_signal
@@ -86,12 +99,10 @@ async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
 
-    # Start the signal monitoring loop in the background
     asyncio.create_task(signal_loop(app))
 
     print("Signal Bot active...")
     
-    # Initialize and run telegram polling
     async with app:
         await app.start()
         await app.updater.start_polling()
