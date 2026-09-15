@@ -7,7 +7,7 @@ import yfinance as yf
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TELEGRAM_TOKEN = "8874815036:AAF26vD-5gVypsXwLzZTNZ1AeCom3FGMZUI"
+TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
 TELEGRAM_CHAT_ID = "7889527038"
 
 SYMBOL_WEEKDAY = "GC=F"    # Gold Futures Ticker (XAUUSD)
