@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 TELEGRAM_TOKEN = "8874815036:AAF26vD-5gVypsXwLzZTNZ1AeCom3FGMZUI"
 TELEGRAM_CHAT_ID = "7889527038"
 
-SYMBOL_WEEKDAY = "GC=F"   # Gold Futures Ticker (XAUUSD)
+SYMBOL_WEEKDAY = "GC=F"    # Gold Futures Ticker (XAUUSD)
 SYMBOL_WEEKEND = "BTC-USD" # Active weekend asset option
 TIMEFRAME = "15m"
 
@@ -82,12 +82,21 @@ async def signal_loop(app):
 
         await asyncio.sleep(60)
 
-if __name__ == "__main__":
+async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(signal_loop(app))
+    # Start the signal monitoring loop in the background
+    asyncio.create_task(signal_loop(app))
 
     print("Signal Bot active...")
-    app.run_polling()
+    
+    # Initialize and run telegram polling
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        while True:
+            await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())
