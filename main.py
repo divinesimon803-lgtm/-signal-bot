@@ -8,13 +8,12 @@ import yfinance as yf
 from flask import Flask
 from threading import Thread
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
 TELEGRAM_CHAT_ID = "7889527038"
-BOT_PASSCODE = "5051"  # Replace with your custom passcode
+BOT_PASSCODE = "5051"
 
-# Assets to monitor during the week vs. weekend
 WEEKDAY_ASSETS = {
     "GC=F": "XAUUSD (Gold)",
     "EURUSD=X": "EUR/USD",
@@ -33,7 +32,6 @@ authorized_users = set()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-# Simple web server to keep Render port checks happy
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -75,24 +73,22 @@ def get_signal(ticker):
     elif close < ema and rsi < 45:
         sig = "SELL"
 
-    # Stop Loss & Take Profit calculations
     sl = close * 0.998 if sig == "BUY" else close * 1.002
     tp = close * 1.004 if sig == "BUY" else close * 0.996
 
     return sig, close, sl, tp
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    if context.args and context.args[0] == BOT_PASSCODE:
-        authorized_users.add(user_id)
-        await update.message.reply_text("🔓 Passcode accepted! Multi-pair APA Signal Bot active.")
-        return
+    text = update.message.text.strip()
 
-    if user_id in authorized_users:
+    if text == BOT_PASSCODE or text == f"/start {BOT_PASSCODE}":
+        authorized_users.add(user_id)
+        await update.message.reply_text("🔓 Passcode accepted! APA Signal Bot is active.")
+    elif user_id in authorized_users:
         await update.message.reply_text("🟢 APA Signal Bot is actively monitoring markets!")
     else:
-        await update.message.reply_text("🔒 Access Denied! Please enter the passcode:\nUsage: `/start <passcode>`", parse_mode="Markdown")
+        await update.message.reply_text("🔒 Access Denied! Send the passcode `5051` to unlock access.", parse_mode="Markdown")
 
 async def signal_loop(app):
     global last_signals
@@ -110,11 +106,10 @@ async def signal_loop(app):
                     msg = (
                         f"🚨 *NEW APA SIGNAL* 🚨\n\n"
                         f"Asset: *{label}*\n"
-                        f"Action: *{sig}* {emoji}\n"
-                        f"Entry: `{entry:.4f}`\n"
-                        f"SL: `{sl:.4f}`\n"
-                        f"TP: `{tp:.4f}`\n\n"
-                        f"💡 *Set your preferred lot size on MT5!*"
+                        f"Action: *{sig}* {emoji}\n\n"
+                        f"Entry: `{entry:.4f}`\n\n"
+                        f"SL:\n`{sl:.4f}`\n\n"
+                        f"TP:\n`{tp:.4f}`"
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
 
@@ -125,11 +120,12 @@ async def signal_loop(app):
 
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_cmd))
+    
+    # Handle both /start command and plain text passcodes
+    app.add_handler(CommandHandler("start", handle_text_message))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
 
-    # Run web server in background thread
     Thread(target=run_flask, daemon=True).start()
-
     asyncio.create_task(signal_loop(app))
 
     print("Signal Bot active...")
