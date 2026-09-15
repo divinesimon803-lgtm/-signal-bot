@@ -88,7 +88,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 APA Signal Bot is actively monitoring markets!")
     else:
-        await update.message.reply_text("🔒 Access Denied! Send the passcode `5051` to unlock access.", parse_mode="Markdown")
+        # SECURE ACCESS DENIED MESSAGE
+        await update.message.reply_text("🔒 *Access Denied!* Please send the correct authorization code.", parse_mode="Markdown")
 
 async def signal_loop(app):
     global last_signals
@@ -121,7 +122,6 @@ async def signal_loop(app):
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
-    # Handle both /start command and plain text passcodes
     app.add_handler(CommandHandler("start", handle_text_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
 
