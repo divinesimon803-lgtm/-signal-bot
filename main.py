@@ -14,7 +14,6 @@ TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
 TELEGRAM_CHAT_ID = "7889527038"
 BOT_PASSCODE = "5051"
 
-# Updated to spot gold symbol 'XAUUSD=X' to match broker price scale
 WEEKDAY_ASSETS = {
     "XAUUSD=X": "XAUUSD (Gold)",
     "EURUSD=X": "EUR/USD",
@@ -77,37 +76,33 @@ def get_signal(ticker):
     if not sig:
         return None, None, None, None
 
-    # CUSTOM FAST-CLOSING TP & SL PER ASSET TYPE
+    # CUSTOM TP & SL CALCULATION ACCORDING TO BROKER RULES
     if ticker in ["EURUSD=X", "GBPUSD=X"]:
         # Forex Scalping: 12 Pips TP, 8 Pips SL
         tp_distance = 0.0012
         sl_distance = 0.0008
-        if sig == "BUY":
-            tp = close + tp_distance
-            sl = close - sl_distance
-        else:
-            tp = close - tp_distance
-            sl = close + sl_distance
 
     elif ticker == "XAUUSD=X":
-        # Gold Scalping: $2.50 TP, $1.50 SL
-        tp_distance = 2.50
-        sl_distance = 1.50
-        if sig == "BUY":
-            tp = close + tp_distance
-            sl = close - sl_distance
-        else:
-            tp = close - tp_distance
-            sl = close + sl_distance
+        # Gold Scalping: $5.00 TP, $3.00 SL (Survives broker spread)
+        tp_distance = 5.00
+        sl_distance = 3.00
+
+    elif ticker == "BTC-USD":
+        # Bitcoin Scalping: $250 TP, $150 SL (Satisfies 20,000 points rule)
+        tp_distance = 250.0
+        sl_distance = 150.0
 
     else:
-        # Crypto Scalping (BTC/ETH): Tight percentage targets
-        if sig == "BUY":
-            tp = close * 1.004
-            sl = close * 0.998
-        else:
-            tp = close * 0.996
-            sl = close * 1.002
+        # Ethereum/Other Cryptos
+        tp_distance = close * 0.015
+        sl_distance = close * 0.010
+
+    if sig == "BUY":
+        tp = close + tp_distance
+        sl = close - sl_distance
+    else:
+        tp = close - tp_distance
+        sl = close + sl_distance
 
     return sig, close, sl, tp
 
@@ -137,13 +132,13 @@ async def signal_loop(app):
                     last_signals[ticker] = sig
                     emoji = "📈" if sig == "BUY" else "📉"
                     
-                    # Decimals formatted: 5 decimal places for Forex, 2 for Gold/Crypto
                     dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
                     
                     msg = (
                         f"🚨 *NEW APA SIGNAL* 🚨\n\n"
                         f"Asset: *{label}*\n"
-                        f"Action: *{sig}* {emoji}\n\n"
+                        f"Action: *{sig}* {emoji}\n"
+                        f"Recommended Lot: `0.01` (STRICT)\n\n"
                         f"Entry: `{entry:.{dec}f}`\n\n"
                         f"SL:\n`{sl:.{dec}f}`\n\n"
                         f"TP:\n`{tp:.{dec}f}`"
