@@ -73,8 +73,28 @@ def get_signal(ticker):
     elif close < ema and rsi < 45:
         sig = "SELL"
 
-    sl = close * 0.998 if sig == "BUY" else close * 1.002
-    tp = close * 1.004 if sig == "BUY" else close * 0.996
+    if not sig:
+        return None, None, None, None
+
+    # CUSTOM FAST-CLOSING TP & SL PER ASSET TYPE
+    if ticker in ["EURUSD=X", "GBPUSD=X"]:
+        # Forex Scalping Targets: 12 Pips TP, 8 Pips SL (Fast Exits)
+        tp_distance = 0.0012
+        sl_distance = 0.0008
+        tp = close + tp_distance if sig == "BUY" else close - tp_distance
+        sl = close - sl_distance if sig == "BUY" else close + sl_distance
+
+    elif ticker == "GC=F":
+        # Gold Scalping Targets: $2.50 TP, $1.50 SL
+        tp_distance = 2.50
+        sl_distance = 1.50
+        tp = close + tp_distance if sig == "BUY" else close - tp_distance
+        sl = close - sl_distance if sig == "BUY" else close + sl_distance
+
+    else:
+        # Crypto Targets (BTC/ETH): Keep percentages fast & unchanged
+        sl = close * 0.998 if sig == "BUY" else close * 1.002
+        tp = close * 1.004 if sig == "BUY" else close * 0.996
 
     return sig, close, sl, tp
 
@@ -88,7 +108,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 APA Signal Bot is actively monitoring markets!")
     else:
-        # SECURE ACCESS DENIED MESSAGE
         await update.message.reply_text("🔒 *Access Denied!* Please send the correct authorization code.", parse_mode="Markdown")
 
 async def signal_loop(app):
@@ -104,13 +123,17 @@ async def signal_loop(app):
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
                     emoji = "📈" if sig == "BUY" else "📉"
+                    
+                    # Decimals formatted: 5 decimal places for Forex, 2 for Gold/Crypto
+                    dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
+                    
                     msg = (
                         f"🚨 *NEW APA SIGNAL* 🚨\n\n"
                         f"Asset: *{label}*\n"
                         f"Action: *{sig}* {emoji}\n\n"
-                        f"Entry: `{entry:.4f}`\n\n"
-                        f"SL:\n`{sl:.4f}`\n\n"
-                        f"TP:\n`{tp:.4f}`"
+                        f"Entry: `{entry:.{dec}f}`\n\n"
+                        f"SL:\n`{sl:.{dec}f}`\n\n"
+                        f"TP:\n`{tp:.{dec}f}`"
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
 
