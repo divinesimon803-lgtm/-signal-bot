@@ -14,8 +14,9 @@ TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
 TELEGRAM_CHAT_ID = "7889527038"
 BOT_PASSCODE = "5051"
 
+# Updated to spot gold symbol 'XAUUSD=X' to match broker price scale
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD (Gold)",
+    "XAUUSD=X": "XAUUSD (Gold)",
     "EURUSD=X": "EUR/USD",
     "GBPUSD=X": "GBP/USD",
     "BTC-USD": "Bitcoin"
@@ -78,23 +79,35 @@ def get_signal(ticker):
 
     # CUSTOM FAST-CLOSING TP & SL PER ASSET TYPE
     if ticker in ["EURUSD=X", "GBPUSD=X"]:
-        # Forex Scalping Targets: 12 Pips TP, 8 Pips SL (Fast Exits)
+        # Forex Scalping: 12 Pips TP, 8 Pips SL
         tp_distance = 0.0012
         sl_distance = 0.0008
-        tp = close + tp_distance if sig == "BUY" else close - tp_distance
-        sl = close - sl_distance if sig == "BUY" else close + sl_distance
+        if sig == "BUY":
+            tp = close + tp_distance
+            sl = close - sl_distance
+        else:
+            tp = close - tp_distance
+            sl = close + sl_distance
 
-    elif ticker == "GC=F":
-        # Gold Scalping Targets: $2.50 TP, $1.50 SL
+    elif ticker == "XAUUSD=X":
+        # Gold Scalping: $2.50 TP, $1.50 SL
         tp_distance = 2.50
         sl_distance = 1.50
-        tp = close + tp_distance if sig == "BUY" else close - tp_distance
-        sl = close - sl_distance if sig == "BUY" else close + sl_distance
+        if sig == "BUY":
+            tp = close + tp_distance
+            sl = close - sl_distance
+        else:
+            tp = close - tp_distance
+            sl = close + sl_distance
 
     else:
-        # Crypto Targets (BTC/ETH): Keep percentages fast & unchanged
-        sl = close * 0.998 if sig == "BUY" else close * 1.002
-        tp = close * 1.004 if sig == "BUY" else close * 0.996
+        # Crypto Scalping (BTC/ETH): Tight percentage targets
+        if sig == "BUY":
+            tp = close * 1.004
+            sl = close * 0.998
+        else:
+            tp = close * 0.996
+            sl = close * 1.002
 
     return sig, close, sl, tp
 
