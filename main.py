@@ -3,6 +3,7 @@ import datetime
 import logging
 import os
 import pandas as pd
+import requests
 import ta
 import yfinance as yf
 from flask import Flask
@@ -14,6 +15,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
 TELEGRAM_CHAT_ID = "7889527038"
 BOT_PASSCODE = "5051"
+
+# SUPABASE DATABASE CONFIGURATION
+SUPABASE_URL = "https://khmtegoloiszskwjmuku.supabase.co"
+SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG"  # <--- Paste your publishable/anon key inside quotes
 
 WEEKDAY_ASSETS = {
     "XAUUSD=X": "XAUUSD (Gold)",
@@ -33,7 +38,7 @@ authorized_users = set()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-# --- FLASK WEB SERVER (For Render Health Checks) ---
+# --- FLASK WEB SERVER ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -44,7 +49,32 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
-# --- MARKET DATA FETCHING (With Network Guard) ---
+# --- SUPABASE SIGNAL PUSHER ---
+def push_to_supabase(symbol, action, entry, sl, tp):
+    url = f"{SUPABASE_URL}/rest/v1/signals"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal"
+    }
+    payload = {
+        "symbol": symbol,
+        "action": action,
+        "entry": float(entry),
+        "sl": float(sl),
+        "tp": float(tp)
+    }
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        if res.status_code in [200, 201]:
+            logging.info(f"Successfully pushed {symbol} signal to Supabase!")
+        else:
+            logging.error(f"Supabase push error: {res.status_code} - {res.text}")
+    except Exception as e:
+        logging.error(f"Failed pushing signal to Supabase: {e}")
+
+# --- MARKET DATA FETCHING ---
 def fetch_data(ticker):
     try:
         df = yf.download(tickers=ticker, period="5d", interval=TIMEFRAME, progress=False)
@@ -61,13 +91,12 @@ def fetch_data(ticker):
         logging.error(f"Error fetching data for {ticker}: {e}")
         return None
 
-# --- SIGNAL CALCULATION (Strict Closed-Candle Logic) ---
+# --- SIGNAL CALCULATION ---
 def get_signal(ticker):
     df = fetch_data(ticker)
     if df is None or len(df) < 2:
         return None, None, None, None
 
-    # CRITICAL: Always analyze index [-2] (the last FULLY CLOSED 15m candle)
     last_closed_candle = df.iloc[-2]
     close = float(last_closed_candle['Close'])
     ema = float(last_closed_candle['ema50'])
@@ -82,16 +111,15 @@ def get_signal(ticker):
     if not sig:
         return None, None, None, None
 
-    # Broker Distance Rules
     if ticker in ["EURUSD=X", "GBPUSD=X"]:
-        tp_distance = 0.0012  # 12 Pips
-        sl_distance = 0.0008  # 8 Pips
+        tp_distance = 0.0012
+        sl_distance = 0.0008
     elif ticker == "XAUUSD=X":
-        tp_distance = 5.00    # $5.00
-        sl_distance = 3.00    # $3.00
+        tp_distance = 5.00
+        sl_distance = 3.00
     elif ticker == "BTC-USD":
-        tp_distance = 250.0   # $250
-        sl_distance = 150.0   # $150
+        tp_distance = 250.0
+        sl_distance = 150.0
     else:
         tp_distance = close * 0.015
         sl_distance = close * 0.010
@@ -127,14 +155,11 @@ async def heartbeat_loop(app):
             await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat failed: {e}")
-        
-        # Ping every 1 hour (3600 seconds)
         await asyncio.sleep(3600)
 
 # --- MAIN SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
     global last_signals
-    # Send startup message
     try:
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
@@ -167,11 +192,13 @@ async def signal_loop(app):
                         f"TP:\n`{tp:.{dec}f}`"
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+                    
+                    # DUAL SEND: Push directly to Supabase Database for web/mobile app
+                    push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
 
         except Exception as e:
-            logging.error(f"Loop error caught (Auto-Retrying): {e}")
+            logging.error(f"Loop error caught: {e}")
 
-        # Scan every 60 seconds
         await asyncio.sleep(60)
 
 # --- ENTRY POINT ---
@@ -181,10 +208,8 @@ async def main():
     app.add_handler(CommandHandler("start", handle_text_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
 
-    # Start Flask Web Server
     Thread(target=run_flask, daemon=True).start()
 
-    # Start Background Async Tasks
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
 
