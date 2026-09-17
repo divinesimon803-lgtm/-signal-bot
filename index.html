@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>APA Signal Terminal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-gray-950 text-white font-sans min-h-screen p-4 flex flex-col items-center">
+
+  <!-- PIN LOCK SCREEN -->
+  <div id="auth-screen" class="w-full max-w-sm mt-20 bg-gray-900 p-6 rounded-2xl shadow-2xl border border-gray-800">
+    <div class="text-center mb-6">
+      <h1 class="text-2xl font-black text-blue-500">⚡ APA TERMINAL</h1>
+      <p class="text-xs text-gray-400 mt-1">Enter PIN code to access private signals</p>
+    </div>
+    <input type="password" id="pin-input" placeholder="Enter PIN" class="w-full p-3 rounded-xl bg-gray-800 border border-gray-700 mb-4 text-center text-xl font-bold tracking-widest focus:outline-none focus:border-blue-500">
+    <button onclick="checkPin()" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded-xl font-bold transition">Unlock Dashboard</button>
+  </div>
+
+  <!-- MAIN SIGNAL DASHBOARD (Hidden by default) -->
+  <div id="app-screen" class="w-full max-w-md hidden space-y-4">
+    <div class="flex justify-between items-center bg-gray-900 p-4 rounded-xl border border-gray-800">
+      <div>
+        <h1 class="text-xl font-black text-blue-400">⚡ Live Signals</h1>
+        <p class="text-xs text-gray-400">Real-time M15 Signal Feed</p>
+      </div>
+      <span class="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-full font-semibold">Live Connected</span>
+    </div>
+
+    <!-- SIGNAL CONTAINER -->
+    <div id="signals-list" class="space-y-4">
+      <div class="bg-gray-900 p-6 rounded-2xl border border-gray-800 text-center text-gray-500">
+        Waiting for incoming signals...
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SECRET_PIN = "5051"; // Your passcode
+    const SUPABASE_URL = "https://khmtegoloiszskwjmuku.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG";
+
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    function checkPin() {
+      const entered = document.getElementById('pin-input').value.trim();
+      if (entered === SECRET_PIN) {
+        document.getElementById('auth-screen').classList.add('hidden');
+        document.getElementById('app-screen').classList.remove('hidden');
+        loadLatestSignals();
+        listenForNewSignals();
+      } else {
+        alert('Incorrect PIN Code');
+      }
+    }
+
+    async function loadLatestSignals() {
+      const { data, error } = await supabaseClient
+        .from('signals')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(5);
+
+      if (data && data.length > 0) {
+        renderSignals(data);
+      }
+    }
+
+    function listenForNewSignals() {
+      supabaseClient
+        .channel('public:signals')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'signals' }, payload => {
+          loadLatestSignals();
+        })
+        .subscribe();
+    }
+
+    function renderSignals(signals) {
+      const container = document.getElementById('signals-list');
+      container.innerHTML = '';
+
+      signals.forEach(sig => {
+        const isBuy = sig.action === 'BUY';
+        const badgeColor = isBuy ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border-rose-500/30';
+        
+        const card = `
+          <div class="bg-gray-900 p-5 rounded-2xl border border-gray-800 shadow-xl space-y-4">
+            <div class="flex justify-between items-center border-b border-gray-800 pb-3">
+              <span class="text-xl font-black">${sig.symbol}</span>
+              <span class="font-bold px-3 py-1 rounded-lg text-xs border ${badgeColor}">${sig.action}</span>
+            </div>
+
+            <!-- ENTRY -->
+            <div class="flex justify-between items-center bg-gray-950 p-3 rounded-xl border border-gray-800/60">
+              <div>
+                <p class="text-[10px] text-gray-400 font-bold tracking-wider">ENTRY PRICE</p>
+                <p class="font-mono text-base font-bold text-white">${sig.entry}</p>
+              </div>
+              <button onclick="copyToClipboard('${sig.entry}')" class="bg-gray-800 hover:bg-gray-700 text-xs px-3 py-2 rounded-lg font-semibold transition">Copy Entry</button>
+            </div>
+
+            <!-- STOP LOSS -->
+            <div class="flex justify-between items-center bg-gray-950 p-3 rounded-xl border border-gray-800/60">
+              <div>
+                <p class="text-[10px] text-rose-400 font-bold tracking-wider">STOP LOSS (SL)</p>
+                <p class="font-mono text-base font-bold text-rose-300">${sig.sl}</p>
+              </div>
+              <button onclick="copyToClipboard('${sig.sl}')" class="bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 text-xs px-3 py-2 rounded-lg font-semibold transition">Copy SL</button>
+            </div>
+
+            <!-- TAKE PROFIT -->
+            <div class="flex justify-between items-center bg-gray-950 p-3 rounded-xl border border-gray-800/60">
+              <div>
+                <p class="text-[10px] text-emerald-400 font-bold tracking-wider">TAKE PROFIT (TP)</p>
+                <p class="font-mono text-base font-bold text-emerald-300">${sig.tp}</p>
+              </div>
+              <button onclick="copyToClipboard('${sig.tp}')" class="bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-800/40 text-xs px-3 py-2 rounded-lg font-semibold transition">Copy TP</button>
+            </div>
+          </div>
+        `;
+        container.innerHTML += card;
+      });
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text);
+      alert('Copied to clipboard: ' + text);
+    }
+  </script>
+</body>
+</html>
