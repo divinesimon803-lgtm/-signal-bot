@@ -45,7 +45,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live and scanning with Multi-Confluence!"
+    return "APA Signal Bot is live and scanning with WAT Time & Expiry Alerts!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -162,8 +162,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def heartbeat_loop(app):
     while True:
         try:
-            now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M UTC")
-            msg = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15/H1 trends. ({now_utc})"
+            # Shift UTC to WAT (West Africa Time = UTC + 1)
+            wat_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+            formatted_wat = wat_time.strftime("%I:%M %p WAT")
+            
+            msg = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15/H1 trends. ({formatted_wat})"
             await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat failed: {e}")
@@ -175,7 +178,7 @@ async def signal_loop(app):
     try:
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot initialized with H1 Trend Filters on Render!*", 
+            text="🚀 *APA Signal Bot initialized with WAT Time & Expiry Alerts!*", 
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -194,6 +197,13 @@ async def signal_loop(app):
                     emoji = "📈" if sig == "BUY" else "📉"
                     dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
 
+                    # Calculate exact WAT Time (UTC+1) and Expiry Time (+15 Mins)
+                    now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+                    expires_wat = now_wat + datetime.timedelta(minutes=15)
+
+                    time_sent_str = now_wat.strftime("%I:%M %p")
+                    time_expire_str = expires_wat.strftime("%I:%M %p")
+
                     msg = (
                         f"🚨 *NEW APA SIGNAL* 🚨\n\n"
                         f"Asset: *{label}*\n"
@@ -201,11 +211,14 @@ async def signal_loop(app):
                         f"Recommended Lot: `0.01` (STRICT)\n\n"
                         f"Entry: `{entry:.{dec}f}`\n\n"
                         f"SL:\n`{sl:.{dec}f}`\n\n"
-                        f"TP:\n`{tp:.{dec}f}`"
+                        f"TP:\n`{tp:.{dec}f}`\n\n"
+                        f"🕒 *Sent:* `{time_sent_str} WAT`\n"
+                        f"⏳ *Valid Until:* `{time_expire_str} WAT`\n"
+                        f"⚠️ *EXPIRED IF PAST `{time_expire_str}`! DO NOT ENTER!*"
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
                     
-                    # DUAL SEND: Push directly to Supabase Database
+                    # Push directly to Supabase Database
                     push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
 
         except Exception as e:
