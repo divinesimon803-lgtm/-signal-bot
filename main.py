@@ -18,7 +18,7 @@ BOT_PASSCODE = "5051"
 
 # SUPABASE DATABASE CONFIGURATION
 SUPABASE_URL = "https://khmtegoloiszskwjmuku.supabase.co"
-SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG"  # <--- Paste your publishable/anon key inside quotes
+SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG"
 
 WEEKDAY_ASSETS = {
     "XAUUSD=X": "XAUUSD (Gold)",
@@ -32,7 +32,9 @@ WEEKEND_ASSETS = {
     "ETH-USD": "Ethereum"
 }
 
-TIMEFRAME = "15m"
+TIMEFRAME_M15 = "15m"
+TIMEFRAME_H1 = "1h"
+
 last_signals = {}
 authorized_users = set()
 
@@ -43,7 +45,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live and scanning!"
+    return "APA Signal Bot is live and scanning with Multi-Confluence!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -75,54 +77,64 @@ def push_to_supabase(symbol, action, entry, sl, tp):
         logging.error(f"Failed pushing signal to Supabase: {e}")
 
 # --- MARKET DATA FETCHING ---
-def fetch_data(ticker):
+def fetch_data(ticker, interval, period="7d"):
     try:
-        df = yf.download(tickers=ticker, period="5d", interval=TIMEFRAME, progress=False)
+        df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
         if df.empty or len(df) < 50:
             return None
             
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        df['ema50'] = ta.trend.ema_indicator(df['Close'], window=50)
-        df['rsi14'] = ta.momentum.rsi(df['Close'], window=14)
+        if interval == TIMEFRAME_H1:
+            df['ema200_h1'] = ta.trend.ema_indicator(df['Close'], window=200)
+        elif interval == TIMEFRAME_M15:
+            df['ema50'] = ta.trend.ema_indicator(df['Close'], window=50)
+            df['rsi14'] = ta.momentum.rsi(df['Close'], window=14)
+            df['atr14'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+
         return df
     except Exception as e:
-        logging.error(f"Error fetching data for {ticker}: {e}")
+        logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
         return None
 
-# --- SIGNAL CALCULATION ---
+# --- SIGNAL CALCULATION WITH CONFLUENCE & ATR ---
 def get_signal(ticker):
-    df = fetch_data(ticker)
-    if df is None or len(df) < 2:
+    # 1. Fetch H1 Data for Macro Trend Filter
+    df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="30d")
+    if df_h1 is None or 'ema200_h1' not in df_h1 or len(df_h1) < 2:
         return None, None, None, None
 
-    last_closed_candle = df.iloc[-2]
+    last_h1_close = float(df_h1.iloc[-2]['Close'])
+    h1_ema200 = float(df_h1.iloc[-2]['ema200_h1'])
+
+    h1_trend = "BULLISH" if last_h1_close > h1_ema200 else "BEARISH"
+
+    # 2. Fetch M15 Data for Entry Trigger
+    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
+    if df_m15 is None or len(df_m15) < 2:
+        return None, None, None, None
+
+    last_closed_candle = df_m15.iloc[-2]
     close = float(last_closed_candle['Close'])
-    ema = float(last_closed_candle['ema50'])
+    ema50 = float(last_closed_candle['ema50'])
     rsi = float(last_closed_candle['rsi14'])
+    atr = float(last_closed_candle['atr14'])
 
     sig = None
-    if close > ema and rsi > 55:
+
+    # Strict Confluence: H1 Trend + M15 EMA50 + M15 RSI Filter
+    if h1_trend == "BULLISH" and close > ema50 and rsi > 55:
         sig = "BUY"
-    elif close < ema and rsi < 45:
+    elif h1_trend == "BEARISH" and close < ema50 and rsi < 45:
         sig = "SELL"
 
     if not sig:
         return None, None, None, None
 
-    if ticker in ["EURUSD=X", "GBPUSD=X"]:
-        tp_distance = 0.0012
-        sl_distance = 0.0008
-    elif ticker == "XAUUSD=X":
-        tp_distance = 5.00
-        sl_distance = 3.00
-    elif ticker == "BTC-USD":
-        tp_distance = 250.0
-        sl_distance = 150.0
-    else:
-        tp_distance = close * 0.015
-        sl_distance = close * 0.010
+    # Dynamic ATR Volatility Risk Management (1:2 Risk-Reward Ratio)
+    sl_distance = atr * 1.5
+    tp_distance = atr * 3.0
 
     if sig == "BUY":
         tp = close + tp_distance
@@ -151,7 +163,7 @@ async def heartbeat_loop(app):
     while True:
         try:
             now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M UTC")
-            msg = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15 charts. ({now_utc})"
+            msg = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15/H1 trends. ({now_utc})"
             await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat failed: {e}")
@@ -163,7 +175,7 @@ async def signal_loop(app):
     try:
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot initialized and active on Render!*", 
+            text="🚀 *APA Signal Bot initialized with H1 Trend Filters on Render!*", 
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -193,7 +205,7 @@ async def signal_loop(app):
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
                     
-                    # DUAL SEND: Push directly to Supabase Database for web/mobile app
+                    # DUAL SEND: Push directly to Supabase Database
                     push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
 
         except Exception as e:
