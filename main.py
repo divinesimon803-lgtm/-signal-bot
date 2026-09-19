@@ -227,7 +227,7 @@ async def signal_loop(app):
     try:
         init_msg = await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot updated with 24-Hour Auto-Cleanup & Safety Filters!*", 
+            text="🚀 *APA Signal Bot updated with Dynamic Lot Sizing, Auto-Cleanup & Safety Filters!*", 
             parse_mode="Markdown"
         )
         sent_messages.append((init_msg.message_id, time.time()))
@@ -253,6 +253,9 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
+                    # Dynamic Lot Sizing based on Broker Minimum Limits
+                    rec_lot = "0.10" if ticker in ["ETH-USD", "BTC-USD"] else "0.01"
+
                     msg_text = (
                         f"📊 *APA SIGNAL ALERT* 📊\n\n"
                         f"*Asset:* {label}\n"
@@ -260,7 +263,7 @@ async def signal_loop(app):
                         f"• *Entry:* `{entry:.{dec}f}`\n"
                         f"• *Stop Loss:* `{sl:.{dec}f}`\n"
                         f"• *Take Profit:* `{tp:.{dec}f}`\n"
-                        f"• *Rec. Lot Size:* `0.01`\n\n"
+                        f"• *Rec. Lot Size:* `{rec_lot}`\n\n"
                         f"🕒 *Sent:* `{time_sent_str} WAT`\n"
                         f"⏳ *Validity:* Active until `{time_expire_str} WAT`"
                     )
