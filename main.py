@@ -45,7 +45,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live and scanning with WAT Time & Expiry Alerts!"
+    return "APA Signal Bot is live and scanning with WAT Time & Broker Safety Filters!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -132,9 +132,19 @@ def get_signal(ticker):
     if not sig:
         return None, None, None, None
 
-    # Dynamic ATR Volatility Risk Management (1:2 Risk-Reward Ratio)
+    # Base Dynamic ATR Distances
     sl_distance = atr * 1.5
     tp_distance = atr * 3.0
+
+    # FIX: Broker Minimum Stop Distance Buffer for Crypto
+    if ticker == "ETH-USD":
+        min_dist = close * 0.015  # 1.5% Minimum buffer to clear broker Stops Level limits
+        sl_distance = max(sl_distance, min_dist)
+        tp_distance = sl_distance * 2.0
+    elif ticker == "BTC-USD":
+        min_dist = close * 0.010  # 1.0% Minimum buffer for BTC
+        sl_distance = max(sl_distance, min_dist)
+        tp_distance = sl_distance * 2.0
 
     if sig == "BUY":
         tp = close + tp_distance
@@ -162,7 +172,6 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def heartbeat_loop(app):
     while True:
         try:
-            # Shift UTC to WAT (West Africa Time = UTC + 1)
             wat_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
             formatted_wat = wat_time.strftime("%I:%M %p WAT")
             
@@ -178,7 +187,7 @@ async def signal_loop(app):
     try:
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot initialized with WAT Time & Expiry Alerts!*", 
+            text="🚀 *APA Signal Bot updated with Broker Safety Filters & Strict Lot Warnings!*", 
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -195,9 +204,10 @@ async def signal_loop(app):
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
                     emoji = "📈" if sig == "BUY" else "📉"
+                    
+                    # Decimal Precision Formatting
                     dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
 
-                    # Calculate exact WAT Time (UTC+1) and Expiry Time (+15 Mins)
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                     expires_wat = now_wat + datetime.timedelta(minutes=15)
 
@@ -207,18 +217,17 @@ async def signal_loop(app):
                     msg = (
                         f"🚨 *NEW APA SIGNAL* 🚨\n\n"
                         f"Asset: *{label}*\n"
-                        f"Action: *{sig}* {emoji}\n"
-                        f"Recommended Lot: `0.01` (STRICT)\n\n"
+                        f"Action: *{sig}* {emoji}\n\n"
+                        f"⚠️ *LOT SIZE:* `0.01` *(DO NOT USE 0.10!)* ⚠️\n\n"
                         f"Entry: `{entry:.{dec}f}`\n\n"
                         f"SL:\n`{sl:.{dec}f}`\n\n"
                         f"TP:\n`{tp:.{dec}f}`\n\n"
                         f"🕒 *Sent:* `{time_sent_str} WAT`\n"
                         f"⏳ *Valid Until:* `{time_expire_str} WAT`\n"
-                        f"⚠️ *EXPIRED IF PAST `{time_expire_str}`! DO NOT ENTER!*"
+                        f"⛔ *EXPIRED IF PAST `{time_expire_str}`! DO NOT ENTER!*"
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
                     
-                    # Push directly to Supabase Database
                     push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
 
         except Exception as e:
