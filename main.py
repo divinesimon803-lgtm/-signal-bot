@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import logging
 import os
+import time
 import pandas as pd
 import requests
 import ta
@@ -38,6 +39,9 @@ TIMEFRAME_H1 = "1h"
 last_signals = {}
 authorized_users = set()
 
+# Message Tracker for 24-Hour Deletion: list of (message_id, timestamp)
+sent_messages = []
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 # --- FLASK WEB SERVER ---
@@ -45,7 +49,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live and scanning with WAT Time & Broker Safety Filters!"
+    return "APA Signal Bot is live with Auto-Cleanup & Broker Safety Filters!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -100,7 +104,6 @@ def fetch_data(ticker, interval, period="7d"):
 
 # --- SIGNAL CALCULATION WITH CONFLUENCE & UNIVERSAL SAFETY BUFFERS ---
 def get_signal(ticker):
-    # 1. Fetch H1 Data for Macro Trend Filter
     df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="30d")
     if df_h1 is None or 'ema200_h1' not in df_h1 or len(df_h1) < 2:
         return None, None, None, None
@@ -111,17 +114,13 @@ def get_signal(ticker):
 
     last_h1_close = float(last_h1_row['Close'])
     h1_ema200 = float(last_h1_row['ema200_h1'])
-
     h1_trend = "BULLISH" if last_h1_close > h1_ema200 else "BEARISH"
 
-    # 2. Fetch M15 Data for Entry Trigger
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 2:
         return None, None, None, None
 
     last_closed_candle = df_m15.iloc[-2]
-    
-    # Check for NaN indicator values
     required_cols = ['Close', 'ema50', 'rsi14', 'atr14']
     if any(pd.isna(last_closed_candle[col]) for col in required_cols):
         return None, None, None, None
@@ -132,8 +131,6 @@ def get_signal(ticker):
     atr = float(last_closed_candle['atr14'])
 
     sig = None
-
-    # Strict Confluence: H1 Trend + M15 EMA50 + M15 RSI Filter
     if h1_trend == "BULLISH" and close > ema50 and rsi > 55:
         sig = "BUY"
     elif h1_trend == "BEARISH" and close < ema50 and rsi < 45:
@@ -142,26 +139,21 @@ def get_signal(ticker):
     if not sig:
         return None, None, None, None
 
-    # Base Dynamic ATR Distances
     sl_distance = atr * 1.5
     tp_distance = atr * 3.0
 
-    # UNIVERSAL BROKER SAFETY BUFFERS ACROSS ALL ASSETS
+    # Universal Broker Safety Buffers
     if ticker in ["EURUSD=X", "GBPUSD=X"]:
-        min_dist = 0.0015  # Minimum 15 Pips for Forex Majors
-        sl_distance = max(sl_distance, min_dist)
+        sl_distance = max(sl_distance, 0.0015)
         tp_distance = sl_distance * 2.0
     elif ticker == "XAUUSD=X":
-        min_dist = 3.50    # Minimum $3.50 distance for Gold
-        sl_distance = max(sl_distance, min_dist)
+        sl_distance = max(sl_distance, 3.50)
         tp_distance = sl_distance * 2.0
     elif ticker == "ETH-USD":
-        min_dist = close * 0.015  # 1.5% Buffer for Ethereum
-        sl_distance = max(sl_distance, min_dist)
+        sl_distance = max(sl_distance, close * 0.015)
         tp_distance = sl_distance * 2.0
     elif ticker == "BTC-USD":
-        min_dist = close * 0.010  # 1.0% Buffer for Bitcoin
-        sl_distance = max(sl_distance, min_dist)
+        sl_distance = max(sl_distance, close * 0.010)
         tp_distance = sl_distance * 2.0
 
     if sig == "BUY":
@@ -184,7 +176,33 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 APA Signal Bot is actively monitoring markets!")
     else:
-        await update.message.reply_text("🔒 *Access Denied!* Please send the correct authorization code.", parse_mode="Markdown")
+        await update.message.reply_text("🔒 *Access Denied!* Send correct passcode.", parse_mode="Markdown")
+
+# --- 24-HOUR AUTOMATIC MESSAGE CLEANUP LOOP ---
+async def auto_cleanup_loop(app):
+    """Deletes messages older than 24 hours (86,400 seconds) from Telegram chat"""
+    global sent_messages
+    while True:
+        try:
+            now_ts = time.time()
+            cutoff_ts = now_ts - (24 * 3600)  # 24 Hours ago
+            
+            remaining_messages = []
+            for msg_id, ts in sent_messages:
+                if ts < cutoff_ts:
+                    try:
+                        await app.bot.delete_message(chat_id=TELEGRAM_CHAT_ID, message_id=msg_id)
+                        logging.info(f"Cleaned up 24h+ old message (ID: {msg_id})")
+                    except Exception as e:
+                        logging.warning(f"Could not delete message {msg_id}: {e}")
+                else:
+                    remaining_messages.append((msg_id, ts))
+            
+            sent_messages = remaining_messages
+        except Exception as e:
+            logging.error(f"Auto-cleanup error: {e}")
+
+        await asyncio.sleep(600)  # Check every 10 minutes
 
 # --- HOURLY HEARTBEAT TASK ---
 async def heartbeat_loop(app):
@@ -193,21 +211,26 @@ async def heartbeat_loop(app):
             wat_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
             formatted_wat = wat_time.strftime("%I:%M %p WAT")
             
-            msg = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15/H1 trends. ({formatted_wat})"
-            await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+            msg_text = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15/H1 trends. ({formatted_wat})"
+            msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
+            
+            # Track message for 24h auto-deletion
+            sent_messages.append((msg.message_id, time.time()))
         except Exception as e:
             logging.error(f"Heartbeat failed: {e}")
+            
         await asyncio.sleep(3600)
 
 # --- MAIN SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
     global last_signals
     try:
-        await app.bot.send_message(
+        init_msg = await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot updated with Universal Broker Safety Filters & Full Error Protection!*", 
+            text="🚀 *APA Signal Bot updated with 24-Hour Auto-Cleanup & Safety Filters!*", 
             parse_mode="Markdown"
         )
+        sent_messages.append((init_msg.message_id, time.time()))
     except Exception as e:
         logging.error(f"Failed to send startup alert: {e}")
 
@@ -222,7 +245,6 @@ async def signal_loop(app):
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
                     
-                    # Decimal Precision Formatting
                     dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
@@ -231,8 +253,7 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
-                    # CLEAN PROFESSIONAL TELEGRAM FORMAT
-                    msg = (
+                    msg_text = (
                         f"📊 *APA SIGNAL ALERT* 📊\n\n"
                         f"*Asset:* {label}\n"
                         f"*Order Type:* {sig}\n\n"
@@ -243,7 +264,11 @@ async def signal_loop(app):
                         f"🕒 *Sent:* `{time_sent_str} WAT`\n"
                         f"⏳ *Validity:* Active until `{time_expire_str} WAT`"
                     )
-                    await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
+                    
+                    msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
+                    
+                    # Track message for 24h auto-deletion
+                    sent_messages.append((msg.message_id, time.time()))
                     
                     push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
 
@@ -263,6 +288,7 @@ async def main():
 
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
+    asyncio.create_task(auto_cleanup_loop(app))  # Auto-cleanup task active
 
     print("Signal Bot active...")
 
