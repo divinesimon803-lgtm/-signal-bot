@@ -80,7 +80,7 @@ def push_to_supabase(symbol, action, entry, sl, tp):
 def fetch_data(ticker, interval, period="7d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
-        if df.empty or len(df) < 50:
+        if df is None or df.empty or len(df) < 50:
             return None
             
         if isinstance(df.columns, pd.MultiIndex):
@@ -98,15 +98,19 @@ def fetch_data(ticker, interval, period="7d"):
         logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
         return None
 
-# --- SIGNAL CALCULATION WITH CONFLUENCE & ATR ---
+# --- SIGNAL CALCULATION WITH CONFLUENCE & UNIVERSAL SAFETY BUFFERS ---
 def get_signal(ticker):
     # 1. Fetch H1 Data for Macro Trend Filter
     df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="30d")
     if df_h1 is None or 'ema200_h1' not in df_h1 or len(df_h1) < 2:
         return None, None, None, None
 
-    last_h1_close = float(df_h1.iloc[-2]['Close'])
-    h1_ema200 = float(df_h1.iloc[-2]['ema200_h1'])
+    last_h1_row = df_h1.iloc[-2]
+    if pd.isna(last_h1_row['Close']) or pd.isna(last_h1_row['ema200_h1']):
+        return None, None, None, None
+
+    last_h1_close = float(last_h1_row['Close'])
+    h1_ema200 = float(last_h1_row['ema200_h1'])
 
     h1_trend = "BULLISH" if last_h1_close > h1_ema200 else "BEARISH"
 
@@ -116,6 +120,12 @@ def get_signal(ticker):
         return None, None, None, None
 
     last_closed_candle = df_m15.iloc[-2]
+    
+    # Check for NaN indicator values
+    required_cols = ['Close', 'ema50', 'rsi14', 'atr14']
+    if any(pd.isna(last_closed_candle[col]) for col in required_cols):
+        return None, None, None, None
+
     close = float(last_closed_candle['Close'])
     ema50 = float(last_closed_candle['ema50'])
     rsi = float(last_closed_candle['rsi14'])
@@ -136,13 +146,21 @@ def get_signal(ticker):
     sl_distance = atr * 1.5
     tp_distance = atr * 3.0
 
-    # FIX: Broker Minimum Stop Distance Buffer for Crypto
-    if ticker == "ETH-USD":
-        min_dist = close * 0.015  # 1.5% Minimum buffer to clear broker Stops Level limits
+    # UNIVERSAL BROKER SAFETY BUFFERS ACROSS ALL ASSETS
+    if ticker in ["EURUSD=X", "GBPUSD=X"]:
+        min_dist = 0.0015  # Minimum 15 Pips for Forex Majors
+        sl_distance = max(sl_distance, min_dist)
+        tp_distance = sl_distance * 2.0
+    elif ticker == "XAUUSD=X":
+        min_dist = 3.50    # Minimum $3.50 distance for Gold
+        sl_distance = max(sl_distance, min_dist)
+        tp_distance = sl_distance * 2.0
+    elif ticker == "ETH-USD":
+        min_dist = close * 0.015  # 1.5% Buffer for Ethereum
         sl_distance = max(sl_distance, min_dist)
         tp_distance = sl_distance * 2.0
     elif ticker == "BTC-USD":
-        min_dist = close * 0.010  # 1.0% Minimum buffer for BTC
+        min_dist = close * 0.010  # 1.0% Buffer for Bitcoin
         sl_distance = max(sl_distance, min_dist)
         tp_distance = sl_distance * 2.0
 
@@ -158,7 +176,7 @@ def get_signal(ticker):
 # --- TELEGRAM USER AUTHORIZATION ---
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.strip()
+    text = update.message.text.strip() if update.message and update.message.text else ""
 
     if text == BOT_PASSCODE or text == f"/start {BOT_PASSCODE}":
         authorized_users.add(user_id)
@@ -187,7 +205,7 @@ async def signal_loop(app):
     try:
         await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot updated with Broker Safety Filters & Strict Lot Warnings!*", 
+            text="🚀 *APA Signal Bot updated with Universal Broker Safety Filters & Full Error Protection!*", 
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -195,7 +213,7 @@ async def signal_loop(app):
 
     while True:
         try:
-            day = datetime.datetime.now().weekday()
+            day = datetime.datetime.now(datetime.timezone.utc).weekday()
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
@@ -203,7 +221,6 @@ async def signal_loop(app):
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
-                    emoji = "📈" if sig == "BUY" else "📉"
                     
                     # Decimal Precision Formatting
                     dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
@@ -214,17 +231,17 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
+                    # CLEAN PROFESSIONAL TELEGRAM FORMAT
                     msg = (
-                        f"🚨 *NEW APA SIGNAL* 🚨\n\n"
-                        f"Asset: *{label}*\n"
-                        f"Action: *{sig}* {emoji}\n\n"
-                        f"⚠️ *LOT SIZE:* `0.01` *(DO NOT USE 0.10!)* ⚠️\n\n"
-                        f"Entry: `{entry:.{dec}f}`\n\n"
-                        f"SL:\n`{sl:.{dec}f}`\n\n"
-                        f"TP:\n`{tp:.{dec}f}`\n\n"
+                        f"📊 *APA SIGNAL ALERT* 📊\n\n"
+                        f"*Asset:* {label}\n"
+                        f"*Order Type:* {sig}\n\n"
+                        f"• *Entry:* `{entry:.{dec}f}`\n"
+                        f"• *Stop Loss:* `{sl:.{dec}f}`\n"
+                        f"• *Take Profit:* `{tp:.{dec}f}`\n"
+                        f"• *Rec. Lot Size:* `0.01`\n\n"
                         f"🕒 *Sent:* `{time_sent_str} WAT`\n"
-                        f"⏳ *Valid Until:* `{time_expire_str} WAT`\n"
-                        f"⛔ *EXPIRED IF PAST `{time_expire_str}`! DO NOT ENTER!*"
+                        f"⏳ *Validity:* Active until `{time_expire_str} WAT`"
                     )
                     await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode="Markdown")
                     
