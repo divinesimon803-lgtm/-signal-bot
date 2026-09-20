@@ -21,16 +21,27 @@ BOT_PASSCODE = "5051"
 SUPABASE_URL = "https://khmtegoloiszskwjmuku.supabase.co"
 SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG"
 
+# --- ASSETS ROSTER ---
 WEEKDAY_ASSETS = {
-    "XAUUSD=X": "XAUUSD (Gold)",
-    "EURUSD=X": "EUR/USD",
-    "GBPUSD=X": "GBP/USD",
-    "BTC-USD": "Bitcoin"
+    "XAUUSD=X": "XAUUSD",
+    "EURUSD=X": "EURUSD",
+    "GBPUSD=X": "GBPUSD",
+    "JPY=X": "USDJPY",
+    "AUDUSD=X": "AUDUSD",
+    "CAD=X": "USDCAD",
+    "NZDUSD=X": "NZDUSD",
+    "CHF=X": "USDCHF",
+    "BTC-USD": "BTCUSD",
+    "ETH-USD": "ETHUSD"
 }
 
+# Expanded Crypto Weekend Roster (Trades 24/7)
 WEEKEND_ASSETS = {
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Ethereum"
+    "BTC-USD": "BTCUSD",
+    "ETH-USD": "ETHUSD",
+    "SOL-USD": "SOLUSD",
+    "XRP-USD": "XRPUSD",
+    "ADA-USD": "ADAUSD"
 }
 
 TIMEFRAME_M15 = "15m"
@@ -49,7 +60,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live with Auto-Cleanup & Broker Safety Filters!"
+    return "APA Signal Bot is live with Custom Crypto Lot Sizes & Safety Filters!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -143,17 +154,17 @@ def get_signal(ticker):
     tp_distance = atr * 3.0
 
     # Universal Broker Safety Buffers
-    if ticker in ["EURUSD=X", "GBPUSD=X"]:
+    if ticker in ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "NZDUSD=X", "CAD=X", "CHF=X"]:
         sl_distance = max(sl_distance, 0.0015)
+        tp_distance = sl_distance * 2.0
+    elif ticker == "JPY=X":
+        sl_distance = max(sl_distance, 0.150)
         tp_distance = sl_distance * 2.0
     elif ticker == "XAUUSD=X":
         sl_distance = max(sl_distance, 3.50)
         tp_distance = sl_distance * 2.0
-    elif ticker == "ETH-USD":
+    elif ticker in ["ETH-USD", "BTC-USD", "SOL-USD", "XRP-USD", "ADA-USD"]:
         sl_distance = max(sl_distance, close * 0.015)
-        tp_distance = sl_distance * 2.0
-    elif ticker == "BTC-USD":
-        sl_distance = max(sl_distance, close * 0.010)
         tp_distance = sl_distance * 2.0
 
     if sig == "BUY":
@@ -174,7 +185,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         authorized_users.add(user_id)
         await update.message.reply_text("🔓 Passcode accepted! APA Signal Bot is active.")
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 APA Signal Bot is actively monitoring markets!")
+        await update.message.reply_text("🟢 APA Signal Bot is actively monitoring asset pairs!")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode.", parse_mode="Markdown")
 
@@ -227,7 +238,7 @@ async def signal_loop(app):
     try:
         init_msg = await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot updated with Dynamic Lot Sizing, Auto-Cleanup & Safety Filters!*", 
+            text="🚀 *APA Signal Bot active with Broker-Accurate Minimum Lot Sizes!*", 
             parse_mode="Markdown"
         )
         sent_messages.append((init_msg.message_id, time.time()))
@@ -245,7 +256,13 @@ async def signal_loop(app):
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
                     
-                    dec = 5 if ticker in ["EURUSD=X", "GBPUSD=X"] else 2
+                    # Decimal Precision Formatting
+                    if ticker in ["JPY=X"]:
+                        dec = 3
+                    elif ticker in ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "NZDUSD=X", "CAD=X", "CHF=X", "XRP-USD", "ADA-USD"]:
+                        dec = 4
+                    else:
+                        dec = 2
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                     expires_wat = now_wat + datetime.timedelta(minutes=15)
@@ -253,8 +270,17 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
-                    # Dynamic Lot Sizing based on Broker Minimum Limits
-                    rec_lot = "0.10" if ticker in ["ETH-USD", "BTC-USD"] else "0.01"
+                    # Dynamic Lot Sizing mapped to broker contract minimums
+                    if ticker in ["BTC-USD", "ETH-USD"]:
+                        rec_lot = "0.10"
+                    elif ticker == "SOL-USD":
+                        rec_lot = "0.50"
+                    elif ticker == "XRP-USD":
+                        rec_lot = "500"
+                    elif ticker == "ADA-USD":
+                        rec_lot = "200"
+                    else:
+                        rec_lot = "0.01"
 
                     msg_text = (
                         f"📊 *APA SIGNAL ALERT* 📊\n\n"
@@ -291,7 +317,7 @@ async def main():
 
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
-    asyncio.create_task(auto_cleanup_loop(app))  # Auto-cleanup task active
+    asyncio.create_task(auto_cleanup_loop(app))
 
     print("Signal Bot active...")
 
