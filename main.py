@@ -21,7 +21,13 @@ BOT_PASSCODE = "5051"
 SUPABASE_URL = "https://khmtegoloiszskwjmuku.supabase.co"
 SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG"
 
-# --- ASSETS ROSTER ---
+# RISK & ACCOUNT SAFETY CONFIGURATION
+ACCOUNT_BALANCE = 1000.0  # Base account equity in USD
+RISK_PER_TRADE_PCT = 0.01  # Risk 1% of account balance per trade ($10.00)
+MAX_DAILY_LOSS_PCT = 0.03  # Daily Circuit Breaker: Max 3% loss ($30.00)
+MAX_CONSECUTIVE_LOSSES = 3  # Pause bot after 3 straight losing trades
+
+# ASSETS ROSTER
 WEEKDAY_ASSETS = {
     "XAUUSD=X": "XAUUSD",
     "EURUSD=X": "EURUSD",
@@ -35,7 +41,6 @@ WEEKDAY_ASSETS = {
     "ETH-USD": "ETHUSD"
 }
 
-# Expanded Crypto Weekend Roster (Trades 24/7)
 WEEKEND_ASSETS = {
     "BTC-USD": "BTCUSD",
     "ETH-USD": "ETHUSD",
@@ -47,11 +52,19 @@ WEEKEND_ASSETS = {
 TIMEFRAME_M15 = "15m"
 TIMEFRAME_H1 = "1h"
 
+# --- SYSTEM STATE TRACKERS ---
 last_signals = {}
 authorized_users = set()
-
-# Message Tracker for 24-Hour Deletion: list of (message_id, timestamp)
 sent_messages = []
+
+# Risk Protection State
+daily_stats = {
+    "date": datetime.date.today(),
+    "pnl_usd": 0.0,
+    "consecutive_losses": 0,
+    "trading_paused": False,
+    "pause_until": None
+}
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
@@ -60,7 +73,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live with Custom Crypto Lot Sizes & Safety Filters!"
+    return "APA Signal Bot is live with Dynamic Risk Sizing & Circuit Breakers!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -113,33 +126,67 @@ def fetch_data(ticker, interval, period="7d"):
         logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
         return None
 
-# --- SIGNAL CALCULATION WITH CONFLUENCE & UNIVERSAL SAFETY BUFFERS ---
+# --- DYNAMIC RISK LOT SIZE CALCULATOR (1% RULE) ---
+def calculate_dynamic_lot(ticker, entry, sl_distance):
+    """Calculates position size dynamically risking exactly 1% of equity ($10 on $1000 balance)."""
+    risk_amount = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
+    
+    if sl_distance <= 0:
+        return "0.01"
+
+    # Crypto assets
+    if ticker in ["BTC-USD", "ETH-USD"]:
+        units = risk_amount / sl_distance
+        return f"{max(0.01, round(units, 2)):.2f}"
+    elif ticker == "SOL-USD":
+        units = risk_amount / sl_distance
+        return f"{max(0.10, round(units, 2)):.2f}"
+    elif ticker in ["XRP-USD", "ADA-USD"]:
+        units = risk_amount / sl_distance
+        return f"{max(10.0, round(units, 0)):.0f}"
+    # Forex & Gold
+    elif ticker == "XAUUSD=X":
+        # 1 standard lot = $100 per $1 move
+        lot = risk_amount / (sl_distance * 100)
+        return f"{max(0.01, round(lot, 2)):.2f}"
+    else:
+        # Standard Forex 0.01 micro lot default safety sizing
+        return "0.01"
+
+# --- SIGNAL CALCULATION WITH SPREAD/VOLATILITY FILTER ---
 def get_signal(ticker):
     df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="30d")
     if df_h1 is None or 'ema200_h1' not in df_h1 or len(df_h1) < 2:
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     last_h1_row = df_h1.iloc[-2]
     if pd.isna(last_h1_row['Close']) or pd.isna(last_h1_row['ema200_h1']):
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     last_h1_close = float(last_h1_row['Close'])
     h1_ema200 = float(last_h1_row['ema200_h1'])
     h1_trend = "BULLISH" if last_h1_close > h1_ema200 else "BEARISH"
 
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
-    if df_m15 is None or len(df_m15) < 2:
-        return None, None, None, None
+    if df_m15 is None or len(df_m15) < 3:
+        return None, None, None, None, None, None
 
     last_closed_candle = df_m15.iloc[-2]
-    required_cols = ['Close', 'ema50', 'rsi14', 'atr14']
+    prev_candle = df_m15.iloc[-3]
+    required_cols = ['Close', 'High', 'Low', 'ema50', 'rsi14', 'atr14']
     if any(pd.isna(last_closed_candle[col]) for col in required_cols):
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     close = float(last_closed_candle['Close'])
     ema50 = float(last_closed_candle['ema50'])
     rsi = float(last_closed_candle['rsi14'])
     atr = float(last_closed_candle['atr14'])
+
+    # SPREAD / VOLATILITY FILTER: Ignore abnormal candle spikes (Spike > 3x ATR indicates extreme spread/news)
+    candle_range = float(last_closed_candle['High']) - float(last_closed_candle['Low'])
+    if candle_range > (atr * 3.0):
+        logging.warning(f"[{ticker}] Trade skipped: Abnormal spread/volatility spike detected ({candle_range:.4f} vs ATR {atr:.4f})")
+        return None, None, None, None, None, None
 
     sig = None
     if h1_trend == "BULLISH" and close > ema50 and rsi > 55:
@@ -148,12 +195,12 @@ def get_signal(ticker):
         sig = "SELL"
 
     if not sig:
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     sl_distance = atr * 1.5
     tp_distance = atr * 3.0
 
-    # Universal Broker Safety Buffers
+    # Universal Broker Minimum Buffers
     if ticker in ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "NZDUSD=X", "CAD=X", "CHF=X"]:
         sl_distance = max(sl_distance, 0.0015)
         tp_distance = sl_distance * 2.0
@@ -170,11 +217,46 @@ def get_signal(ticker):
     if sig == "BUY":
         tp = close + tp_distance
         sl = close - sl_distance
+        be_level = close + (atr * 1.0)  # Breakeven trigger price
     else:
         tp = close - tp_distance
         sl = close + sl_distance
+        be_level = close - (atr * 1.0)  # Breakeven trigger price
 
-    return sig, close, sl, tp
+    rec_lot = calculate_dynamic_lot(ticker, close, sl_distance)
+
+    return sig, close, sl, tp, be_level, rec_lot
+
+# --- CIRCUIT BREAKER CHECKER ---
+def check_circuit_breaker():
+    """Daily drawdown and consecutive loss protection check."""
+    global daily_stats
+    today = datetime.date.today()
+    
+    # Reset stats on new day
+    if daily_stats["date"] != today:
+        daily_stats = {
+            "date": today,
+            "pnl_usd": 0.0,
+            "consecutive_losses": 0,
+            "trading_paused": False,
+            "pause_until": None
+        }
+        return True, "Trading Active"
+
+    if daily_stats["trading_paused"]:
+        if datetime.datetime.now() < daily_stats["pause_until"]:
+            return False, f"Trading paused until {daily_stats['pause_until'].strftime('%H:%M WAT')} due to Daily Risk Limit."
+        else:
+            daily_stats["trading_paused"] = False
+
+    max_loss_usd = ACCOUNT_BALANCE * MAX_DAILY_LOSS_PCT
+    if abs(daily_stats["pnl_usd"]) >= max_loss_usd or daily_stats["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+        daily_stats["trading_paused"] = True
+        daily_stats["pause_until"] = datetime.datetime.now() + datetime.timedelta(hours=24)
+        return False, "🚨 CIRCUIT BREAKER TRIGGERED: Daily Loss / Consecutive Loss Limit Reached. Bot paused for 24 hours."
+
+    return True, "Trading Active"
 
 # --- TELEGRAM USER AUTHORIZATION ---
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,20 +265,20 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE or text == f"/start {BOT_PASSCODE}":
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 Passcode accepted! APA Signal Bot is active.")
+        await update.message.reply_text("🔓 Passcode accepted! APA Risk-Engine Signal Bot is active.")
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 APA Signal Bot is actively monitoring asset pairs!")
+        is_active, status_msg = check_circuit_breaker()
+        await update.message.reply_text(f"🟢 APA Bot Status: {status_msg}")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode.", parse_mode="Markdown")
 
 # --- 24-HOUR AUTOMATIC MESSAGE CLEANUP LOOP ---
 async def auto_cleanup_loop(app):
-    """Deletes messages older than 24 hours (86,400 seconds) from Telegram chat"""
     global sent_messages
     while True:
         try:
             now_ts = time.time()
-            cutoff_ts = now_ts - (24 * 3600)  # 24 Hours ago
+            cutoff_ts = now_ts - (24 * 3600)
             
             remaining_messages = []
             for msg_id, ts in sent_messages:
@@ -213,7 +295,7 @@ async def auto_cleanup_loop(app):
         except Exception as e:
             logging.error(f"Auto-cleanup error: {e}")
 
-        await asyncio.sleep(600)  # Check every 10 minutes
+        await asyncio.sleep(600)
 
 # --- HOURLY HEARTBEAT TASK ---
 async def heartbeat_loop(app):
@@ -222,10 +304,12 @@ async def heartbeat_loop(app):
             wat_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
             formatted_wat = wat_time.strftime("%I:%M %p WAT")
             
-            msg_text = f"🟢 *[Bot Heartbeat]* APA Signal Bot is active & scanning M15/H1 trends. ({formatted_wat})"
+            is_active, status_msg = check_circuit_breaker()
+            status_icon = "🟢" if is_active else "🔴"
+            
+            msg_text = f"{status_icon} *[Bot Heartbeat]* APA Signal Bot Status: {status_msg} ({formatted_wat})"
             msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
             
-            # Track message for 24h auto-deletion
             sent_messages.append((msg.message_id, time.time()))
         except Exception as e:
             logging.error(f"Heartbeat failed: {e}")
@@ -238,7 +322,7 @@ async def signal_loop(app):
     try:
         init_msg = await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot active with Broker-Accurate Minimum Lot Sizes!*", 
+            text="🚀 *APA Signal Bot Active with Daily Drawdown Circuit Breakers & Dynamic 1% Risk Sizing!*", 
             parse_mode="Markdown"
         )
         sent_messages.append((init_msg.message_id, time.time()))
@@ -247,11 +331,17 @@ async def signal_loop(app):
 
     while True:
         try:
+            is_active, status_reason = check_circuit_breaker()
+            if not is_active:
+                logging.info(f"Signal loop paused: {status_reason}")
+                await asyncio.sleep(300)
+                continue
+
             day = datetime.datetime.now(datetime.timezone.utc).weekday()
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
-                sig, entry, sl, tp = get_signal(ticker)
+                sig, entry, sl, tp, be_level, rec_lot = get_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
@@ -270,33 +360,20 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
-                    # Dynamic Lot Sizing mapped to broker contract minimums
-                    if ticker in ["BTC-USD", "ETH-USD"]:
-                        rec_lot = "0.10"
-                    elif ticker == "SOL-USD":
-                        rec_lot = "0.50"
-                    elif ticker == "XRP-USD":
-                        rec_lot = "500"
-                    elif ticker == "ADA-USD":
-                        rec_lot = "200"
-                    else:
-                        rec_lot = "0.01"
-
                     msg_text = (
-                        f"📊 *APA SIGNAL ALERT* 📊\n\n"
+                        f"📊 *APA SIGNAL ALERT (RISK PROTECTED)* 📊\n\n"
                         f"*Asset:* {label}\n"
                         f"*Order Type:* {sig}\n\n"
                         f"• *Entry:* `{entry:.{dec}f}`\n"
                         f"• *Stop Loss:* `{sl:.{dec}f}`\n"
                         f"• *Take Profit:* `{tp:.{dec}f}`\n"
-                        f"• *Rec. Lot Size:* `{rec_lot}`\n\n"
+                        f"• *Breakeven Trigger:* `{be_level:.{dec}f}` (Move SL to Entry)\n"
+                        f"• *Rec. Lot Size (1% Risk):* `{rec_lot}`\n\n"
                         f"🕒 *Sent:* `{time_sent_str} WAT`\n"
                         f"⏳ *Validity:* Active until `{time_expire_str} WAT`"
                     )
                     
                     msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
-                    
-                    # Track message for 24h auto-deletion
                     sent_messages.append((msg.message_id, time.time()))
                     
                     push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
@@ -319,7 +396,7 @@ async def main():
     asyncio.create_task(heartbeat_loop(app))
     asyncio.create_task(auto_cleanup_loop(app))
 
-    print("Signal Bot active...")
+    print("Signal Bot active with Risk Circuit Breaker...")
 
     async with app:
         await app.start()
