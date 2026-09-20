@@ -3,3 +3,5 @@ pandas
 ta
 yfinance
 flask
+aiohttp
+requests
