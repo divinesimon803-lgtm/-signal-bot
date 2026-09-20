@@ -445,7 +445,8 @@ async def main():
 
     async with app:
         await app.start()
-        await app.updater.start_polling()
+        # FIX: drop_pending_updates=True drops conflicting sessions upon startup on Render
+        await app.updater.start_polling(drop_pending_updates=True)
         while True:
             await asyncio.sleep(3600)
 
