@@ -3,8 +3,8 @@ import datetime
 import logging
 import os
 import time
+import aiohttp
 import pandas as pd
-import requests
 import ta
 import yfinance as yf
 from flask import Flask
@@ -12,14 +12,14 @@ from threading import Thread
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# --- CONFIGURATION ---
-TELEGRAM_TOKEN = "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4"
-TELEGRAM_CHAT_ID = "7889527038"
-BOT_PASSCODE = "5051"
+# --- CONFIGURATION (ENVIRONMENT VARIABLES WITH FALLBACKS) ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")
+BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
 # SUPABASE DATABASE CONFIGURATION
-SUPABASE_URL = "https://khmtegoloiszskwjmuku.supabase.co"
-SUPABASE_KEY = "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG"
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://khmtegoloiszskwjmuku.supabase.co")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG")
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
 ACCOUNT_BALANCE = 1000.0  # Base account equity in USD
@@ -73,14 +73,14 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "APA Signal Bot is live with Dynamic Risk Sizing & Circuit Breakers!"
+    return "APA Signal Bot is live with Dynamic Risk Sizing, Async DB Pushing & Command Center!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
-# --- SUPABASE SIGNAL PUSHER ---
-def push_to_supabase(symbol, action, entry, sl, tp):
+# --- ASYNCHRONOUS SUPABASE SIGNAL PUSHER ---
+async def push_to_supabase_async(symbol, action, entry, sl, tp):
     url = f"{SUPABASE_URL}/rest/v1/signals"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -96,11 +96,13 @@ def push_to_supabase(symbol, action, entry, sl, tp):
         "tp": float(tp)
     }
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
-        if res.status_code in [200, 201]:
-            logging.info(f"Successfully pushed {symbol} signal to Supabase!")
-        else:
-            logging.error(f"Supabase push error: {res.status_code} - {res.text}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as res:
+                if res.status in [200, 201]:
+                    logging.info(f"Successfully pushed {symbol} signal to Supabase!")
+                else:
+                    err_text = await res.text()
+                    logging.error(f"Supabase push error: {res.status} - {err_text}")
     except Exception as e:
         logging.error(f"Failed pushing signal to Supabase: {e}")
 
@@ -146,11 +148,9 @@ def calculate_dynamic_lot(ticker, entry, sl_distance):
         return f"{max(10.0, round(units, 0)):.0f}"
     # Forex & Gold
     elif ticker == "XAUUSD=X":
-        # 1 standard lot = $100 per $1 move
         lot = risk_amount / (sl_distance * 100)
         return f"{max(0.01, round(lot, 2)):.2f}"
     else:
-        # Standard Forex 0.01 micro lot default safety sizing
         return "0.01"
 
 # --- SIGNAL CALCULATION WITH SPREAD/VOLATILITY FILTER ---
@@ -172,7 +172,6 @@ def get_signal(ticker):
         return None, None, None, None, None, None
 
     last_closed_candle = df_m15.iloc[-2]
-    prev_candle = df_m15.iloc[-3]
     required_cols = ['Close', 'High', 'Low', 'ema50', 'rsi14', 'atr14']
     if any(pd.isna(last_closed_candle[col]) for col in required_cols):
         return None, None, None, None, None, None
@@ -182,7 +181,7 @@ def get_signal(ticker):
     rsi = float(last_closed_candle['rsi14'])
     atr = float(last_closed_candle['atr14'])
 
-    # SPREAD / VOLATILITY FILTER: Ignore abnormal candle spikes (Spike > 3x ATR indicates extreme spread/news)
+    # SPREAD / VOLATILITY FILTER
     candle_range = float(last_closed_candle['High']) - float(last_closed_candle['Low'])
     if candle_range > (atr * 3.0):
         logging.warning(f"[{ticker}] Trade skipped: Abnormal spread/volatility spike detected ({candle_range:.4f} vs ATR {atr:.4f})")
@@ -217,11 +216,11 @@ def get_signal(ticker):
     if sig == "BUY":
         tp = close + tp_distance
         sl = close - sl_distance
-        be_level = close + (atr * 1.0)  # Breakeven trigger price
+        be_level = close + (atr * 1.0)
     else:
         tp = close - tp_distance
         sl = close + sl_distance
-        be_level = close - (atr * 1.0)  # Breakeven trigger price
+        be_level = close - (atr * 1.0)
 
     rec_lot = calculate_dynamic_lot(ticker, close, sl_distance)
 
@@ -245,8 +244,10 @@ def check_circuit_breaker():
         return True, "Trading Active"
 
     if daily_stats["trading_paused"]:
-        if datetime.datetime.now() < daily_stats["pause_until"]:
+        if daily_stats["pause_until"] and datetime.datetime.now() < daily_stats["pause_until"]:
             return False, f"Trading paused until {daily_stats['pause_until'].strftime('%H:%M WAT')} due to Daily Risk Limit."
+        elif daily_stats["pause_until"] is None:
+            return False, "Trading manually paused by administrator."
         else:
             daily_stats["trading_paused"] = False
 
@@ -258,7 +259,7 @@ def check_circuit_breaker():
 
     return True, "Trading Active"
 
-# --- TELEGRAM USER AUTHORIZATION ---
+# --- TELEGRAM USER AUTHORIZATION & COMMAND HANDLERS ---
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip() if update.message and update.message.text else ""
@@ -271,6 +272,43 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"🟢 APA Bot Status: {status_msg}")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode.", parse_mode="Markdown")
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Query live trading and circuit breaker stats."""
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.message.reply_text("🔒 Unauthorized.")
+        return
+        
+    is_active, status_reason = check_circuit_breaker()
+    status_msg = (
+        f"⚙️ *APA SYSTEM COMMAND CENTER*\n\n"
+        f"• *Status:* {'🟢 Active' if is_active else '🔴 Paused'}\n"
+        f"• *Details:* {status_reason}\n"
+        f"• *Daily PnL:* `${daily_stats['pnl_usd']:.2f}`\n"
+        f"• *Consecutive Losses:* `{daily_stats['consecutive_losses']}`\n"
+        f"• *Account Equity:* `${ACCOUNT_BALANCE:.2f}`"
+    )
+    await update.message.reply_text(status_msg, parse_mode="Markdown")
+
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually toggle pause on the bot."""
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.message.reply_text("🔒 Unauthorized.")
+        return
+
+    global daily_stats
+    daily_stats["trading_paused"] = not daily_stats["trading_paused"]
+    daily_stats["pause_until"] = None if not daily_stats["trading_paused"] else datetime.datetime.now() + datetime.timedelta(hours=24)
+    
+    state_str = "🔴 Bot manually PAUSED for 24 hours." if daily_stats["trading_paused"] else "🟢 Bot manually RESUMED."
+    await update.message.reply_text(state_str)
+
+# --- GLOBAL ERROR HANDLER ---
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Logs uncaught telegram exceptions without crashing background tasks."""
+    logging.error(f"Global exception caught: {context.error}", exc_info=context.error)
 
 # --- 24-HOUR AUTOMATIC MESSAGE CLEANUP LOOP ---
 async def auto_cleanup_loop(app):
@@ -322,7 +360,7 @@ async def signal_loop(app):
     try:
         init_msg = await app.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID, 
-            text="🚀 *APA Signal Bot Active with Daily Drawdown Circuit Breakers & Dynamic 1% Risk Sizing!*", 
+            text="🚀 *APA Signal Bot Active with Dynamic 1% Risk Sizing & Command Center!*", 
             parse_mode="Markdown"
         )
         sent_messages.append((init_msg.message_id, time.time()))
@@ -376,7 +414,8 @@ async def signal_loop(app):
                     msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
                     sent_messages.append((msg.message_id, time.time()))
                     
-                    push_to_supabase(symbol=label, action=sig, entry=entry, sl=sl, tp=tp)
+                    # Async database push without blocking execution thread
+                    asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp=tp))
 
         except Exception as e:
             logging.error(f"Loop error caught: {e}")
@@ -387,8 +426,14 @@ async def signal_loop(app):
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # Handlers
     app.add_handler(CommandHandler("start", handle_text_message))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
+    
+    # Error Handler
+    app.add_error_handler(global_error_handler)
 
     Thread(target=run_flask, daemon=True).start()
 
@@ -396,7 +441,7 @@ async def main():
     asyncio.create_task(heartbeat_loop(app))
     asyncio.create_task(auto_cleanup_loop(app))
 
-    print("Signal Bot active with Risk Circuit Breaker...")
+    print("Signal Bot active with Risk Circuit Breaker & Command Center...")
 
     async with app:
         await app.start()
