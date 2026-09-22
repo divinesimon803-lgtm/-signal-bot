@@ -117,7 +117,7 @@ def is_in_session_killzone(ticker):
     return in_london or in_ny
 
 # --- ASYNCHRONOUS SUPABASE SIGNAL PUSHER ---
-async def push_to_supabase_async(symbol, action, entry, sl, tp1, tp2):
+async def push_to_supabase_async(symbol, action, entry, sl, tp):
     url = f"{SUPABASE_URL}/rest/v1/signals"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -130,8 +130,7 @@ async def push_to_supabase_async(symbol, action, entry, sl, tp1, tp2):
         "action": action,
         "entry": float(entry),
         "sl": float(sl),
-        "tp": float(tp1),
-        "tp2": float(tp2)
+        "tp": float(tp)
     }
     try:
         async with aiohttp.ClientSession() as session:
@@ -189,7 +188,7 @@ def get_h1_trend_bias(ticker):
 def get_pure_apa_signal(ticker):
     # Step 1: Session Time Filter Check
     if not is_in_session_killzone(ticker):
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None
 
     # Step 2: Higher Timeframe Bias Check
     h1_bias = get_h1_trend_bias(ticker)
@@ -197,7 +196,7 @@ def get_pure_apa_signal(ticker):
     # Step 3: Fetch M15 Data for Execution Entry
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 20:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
     prev_c = df_m15.iloc[-3]
@@ -221,24 +220,22 @@ def get_pure_apa_signal(ticker):
             sig = "SELL"
 
     if not sig:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None
 
-    # Multi-Target Structure (TP1: Quick Near TP | TP2: Runner Target)
+    # Single Target Structure (1:1.5 Risk-to-Reward Ratio)
     risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.3)
 
     if sig == "BUY":
         sl = close_p - risk_distance
-        tp1 = close_p + (risk_distance * 1.0)  # Near Target (High Probability)
-        tp2 = close_p + (risk_distance * 2.0)  # Extended Runner Target
-        be_level = close_p + (risk_distance * 0.5)  # Fast Auto-Breakeven Trigger
+        tp = close_p + (risk_distance * 1.5)
+        be_level = close_p + (risk_distance * 0.5)
     else:
         sl = close_p + risk_distance
-        tp1 = close_p - (risk_distance * 1.0)  # Near Target (High Probability)
-        tp2 = close_p - (risk_distance * 2.0)  # Extended Runner Target
-        be_level = close_p - (risk_distance * 0.5)  # Fast Auto-Breakeven Trigger
+        tp = close_p - (risk_distance * 1.5)
+        be_level = close_p - (risk_distance * 0.5)
 
     rec_lot = calculate_dynamic_lot(ticker)
-    return sig, close_p, sl, tp1, tp2, be_level, rec_lot
+    return sig, close_p, sl, tp, be_level, rec_lot
 
 # --- CIRCUIT BREAKER CHECKER ---
 def check_circuit_breaker():
@@ -282,7 +279,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg_id = query.message.message_id
 
     if data.startswith("approve_"):
-        # Retrieve stored clean broadcast text or fall back
         public_signal_text = draft_signals.pop(msg_id, None)
         
         if not public_signal_text:
@@ -298,8 +294,15 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             sent_messages.append((posted_msg.message_id, time.time()))
             
-            # Update draft in admin chat without repeating full body
-            await query.edit_message_text("✅ **Signal Broadcasted to Channel!**", parse_mode="Markdown")
+            # Keep original message content intact in admin chat and remove action buttons
+            original_text = query.message.text
+            updated_admin_text = f"✅ **[POSTED TO KINGS™ CHANNEL]**\n\n{original_text}"
+            
+            await query.edit_message_text(
+                text=updated_admin_text,
+                reply_markup=None,  # Removes buttons after posting
+                parse_mode="Markdown"
+            )
 
         except Exception as e:
             logging.error(f"Broadcast error: {e}")
@@ -312,7 +315,12 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     elif data.startswith("reject_"):
         draft_signals.pop(msg_id, None)
-        await query.edit_message_text("❌ **Signal Draft Discarded.**")
+        original_text = query.message.text
+        await query.edit_message_text(
+            text=f"❌ **[SIGNAL DISCARDED]**\n\n{original_text}",
+            reply_markup=None,
+            parse_mode="Markdown"
+        )
 
 # --- AUTO CLEANUP & HEARTBEAT LOOPS ---
 async def auto_cleanup_loop(app):
@@ -370,7 +378,7 @@ async def signal_loop(app):
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
-                sig, entry, sl, tp1, tp2, be_level, rec_lot = get_pure_apa_signal(ticker)
+                sig, entry, sl, tp, be_level, rec_lot = get_pure_apa_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
@@ -383,24 +391,22 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
-                    # EMOJI DECISION BASED ON DIRECTION
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    # 1. Clean Professional Channel Signal (One-tap copying using `code`)
+                    # 1. Clean Public Channel Signal Format
                     public_channel_text = (
                         f"👑 **KINGS™ TRADING SIGNAL**\n\n"
                         f"📌 **Pair:** `{label}`\n"
                         f"📈 **Action:** {dir_emoji} **{sig}**\n\n"
                         f"🔹 **Entry:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
-                        f"🎯 **Take Profit 1:** `{tp1:.{dec}f}`\n"
-                        f"🎯 **Take Profit 2:** `{tp2:.{dec}f}`\n\n"
+                        f"🎯 **Take Profit:** `{tp:.{dec}f}`\n\n"
                         f"🛡️ **Breakeven Level:** `{be_level:.{dec}f}`\n"
                         f"📊 **Lot Size:** `{rec_lot}`\n\n"
                         f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`"
                     )
 
-                    # 2. Private Admin Preview Header
+                    # 2. Private Admin Preview Format
                     admin_preview_text = (
                         f"📋 **NEW SIGNAL DRAFT**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -429,7 +435,7 @@ async def signal_loop(app):
                     # Store clean text mapping for instant approval posting
                     draft_signals[sent_draft.message_id] = public_channel_text
 
-                    asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp1=tp1, tp2=tp2))
+                    asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp=tp))
 
         except Exception as e:
             logging.error(f"Signal Loop error: {e}")
