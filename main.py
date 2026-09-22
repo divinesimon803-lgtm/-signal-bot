@@ -53,6 +53,7 @@ TIMEFRAME_H1 = "1h"
 last_signals = {}
 authorized_users = set()
 sent_messages = []
+draft_signals = {}  # Store clean public signal templates keyed by message_id
 
 # Risk Protection State
 daily_stats = {
@@ -278,40 +279,40 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     data = query.data
+    msg_id = query.message.message_id
+
     if data.startswith("approve_"):
-        original_text = query.message.text
+        # Retrieve stored clean broadcast text or fall back
+        public_signal_text = draft_signals.pop(msg_id, None)
         
-        # Clean formatting for public channel broadcast
-        clean_signal = (
-            original_text
-            .replace("🔍 [DRAFT PREVIEW] ", "")
-            .replace("⚠️ TAP TO APPROVE OR REJECT BEFORE BROADCASTING", "")
-            .strip()
-        )
-        
+        if not public_signal_text:
+            await query.edit_message_text("⚠️ **Signal session expired or unavailable.**")
+            return
+
         try:
-            # Direct Broadcast to Public/Private Kings™ Channel
+            # Send clean signal directly to Kings™ Channel
             posted_msg = await context.bot.send_message(
                 chat_id=CHANNEL_CHAT_ID,
-                text=f"📌 **KINGS™ OFFICIAL SIGNAL** 👑\n\n{clean_signal}",
+                text=public_signal_text,
                 parse_mode="Markdown"
             )
             sent_messages.append((posted_msg.message_id, time.time()))
             
-            # Edit draft message in admin chat to confirm action
-            await query.edit_message_text(f"✅ **SIGNAL BROADCASTED TO KINGS™ CHANNEL!**\n\n{clean_signal}", parse_mode="Markdown")
+            # Update draft in admin chat without repeating full body
+            await query.edit_message_text("✅ **Signal Broadcasted to Channel!**", parse_mode="Markdown")
+
         except Exception as e:
             logging.error(f"Broadcast error: {e}")
             await query.edit_message_text(
                 f"⚠️ **BROADCAST FAILED!**\n\n"
-                f"Please ensure the bot is added as an **Administrator** in your channel with 'Post Messages' rights.\n\n"
-                f"Current `CHANNEL_CHAT_ID`: `{CHANNEL_CHAT_ID}`\n"
-                f"Error details: `{e}`", 
+                f"Ensure bot is added as **Admin** in channel with 'Post Messages' permission.\n"
+                f"Error: `{e}`", 
                 parse_mode="Markdown"
             )
 
     elif data.startswith("reject_"):
-        await query.edit_message_text("❌ **SIGNAL DRAFT DISCARDED.**")
+        draft_signals.pop(msg_id, None)
+        await query.edit_message_text("❌ **Signal Draft Discarded.**")
 
 # --- AUTO CLEANUP & HEARTBEAT LOOPS ---
 async def auto_cleanup_loop(app):
@@ -351,7 +352,7 @@ async def heartbeat_loop(app):
 
 # --- MAIN SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
-    global last_signals
+    global last_signals, draft_signals
     while True:
         try:
             is_active, _ = check_circuit_breaker()
@@ -382,33 +383,51 @@ async def signal_loop(app):
                     time_sent_str = now_wat.strftime("%I:%M %p")
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
-                    draft_text = (
-                        f"🔍 [DRAFT PREVIEW] 📊 **INSTITUTIONAL APA ALERT** 📊\n\n"
-                        f"**Asset:** {label}\n"
-                        f"**Order Type:** {sig}\n\n"
-                        f"• **Entry:** `{entry:.{dec}f}`\n"
-                        f"• **Stop Loss:** `{sl:.{dec}f}`\n"
-                        f"• **Take Profit 1 (Near):** `{tp1:.{dec}f}`\n"
-                        f"• **Take Profit 2 (Runner):** `{tp2:.{dec}f}`\n"
-                        f"• **Breakeven Trigger:** `{be_level:.{dec}f}` (Move SL to Entry)\n"
-                        f"• **Recommended Lot:** `{rec_lot}`\n\n"
-                        f"🕒 **Sent:** `{time_sent_str} WAT`\n"
-                        f"⏳ **Validity:** Active until `{time_expire_str} WAT`\n\n"
-                        f"⚠️ TAP TO APPROVE OR REJECT BEFORE BROADCASTING"
+                    # EMOJI DECISION BASED ON DIRECTION
+                    dir_emoji = "🟢" if sig == "BUY" else "🔴"
+
+                    # 1. Clean Professional Channel Signal (One-tap copying using `code`)
+                    public_channel_text = (
+                        f"👑 **KINGS™ TRADING SIGNAL**\n\n"
+                        f"📌 **Pair:** `{label}`\n"
+                        f"📈 **Action:** {dir_emoji} **{sig}**\n\n"
+                        f"🔹 **Entry:** `{entry:.{dec}f}`\n"
+                        f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
+                        f"🎯 **Take Profit 1:** `{tp1:.{dec}f}`\n"
+                        f"🎯 **Take Profit 2:** `{tp2:.{dec}f}`\n\n"
+                        f"🛡️ **Breakeven Level:** `{be_level:.{dec}f}`\n"
+                        f"📊 **Lot Size:** `{rec_lot}`\n\n"
+                        f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`"
                     )
 
-                    # Subtle & Minimal Inline Buttons
+                    # 2. Private Admin Preview Header
+                    admin_preview_text = (
+                        f"📋 **NEW SIGNAL DRAFT**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"{public_channel_text}\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"Tap 🚀 to post to channel or ❌ to discard."
+                    )
+
                     keyboard = [
                         [
-                            InlineKeyboardButton("🚀", callback_data=f"approve_{label}"),
-                            InlineKeyboardButton("❌", callback_data=f"reject_{label}")
+                            InlineKeyboardButton("🚀 Approve & Post", callback_data=f"approve_{label}"),
+                            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{label}")
                         ]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
                     # Send draft to authorized admin chat
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-                    await app.bot.send_message(chat_id=target_user, text=draft_text, reply_markup=reply_markup, parse_mode="Markdown")
+                    sent_draft = await app.bot.send_message(
+                        chat_id=target_user, 
+                        text=admin_preview_text, 
+                        reply_markup=reply_markup, 
+                        parse_mode="Markdown"
+                    )
+
+                    # Store clean text mapping for instant approval posting
+                    draft_signals[sent_draft.message_id] = public_channel_text
 
                     asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp1=tp1, tp2=tp2))
 
@@ -419,7 +438,6 @@ async def signal_loop(app):
 
 # --- ENTRY POINT ---
 async def main():
-    # Increase network request timeouts for Render cold-starts
     t_request = HTTPXRequest(
         connect_timeout=30.0,
         read_timeout=30.0
