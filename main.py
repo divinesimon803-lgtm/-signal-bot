@@ -15,7 +15,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 
 # --- CONFIGURATION (ENVIRONMENT VARIABLES WITH FALLBACKS) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038") # Admin Personal Chat ID for Draft Approvals
+CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631") # Kings™ Private Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
 # SUPABASE DATABASE CONFIGURATION
@@ -82,7 +83,6 @@ async def check_news_blackout():
     year = datetime.date.today().year
     try:
         async with aiohttp.ClientSession() as session:
-            # Check US Public Holidays
             async with session.get(f"https://date.nager.at/api/v3/PublicHolidays/{year}/US", timeout=aiohttp.ClientTimeout(total=4)) as res:
                 if res.status == 200:
                     holidays = await res.json()
@@ -280,18 +280,38 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
     if data.startswith("approve_"):
         original_text = query.message.text
-        clean_signal = original_text.replace("🔍 [DRAFT PREVIEW] ", "").replace("⚠️ TAP TO APPROVE OR REJECT BEFORE BROADCASTING", "").strip()
         
-        posted_msg = await context.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=f"📌 **KINGS™ OFFICIAL SIGNAL** 👑\n\n{clean_signal}",
-            parse_mode="Markdown"
+        # Clean formatting for public channel broadcast
+        clean_signal = (
+            original_text
+            .replace("🔍 [DRAFT PREVIEW] ", "")
+            .replace("⚠️ TAP TO APPROVE OR REJECT BEFORE BROADCASTING", "")
+            .strip()
         )
-        sent_messages.append((posted_msg.message_id, time.time()))
-        await query.edit_message_text(f"✅ **SIGNAL APPROVED & BROADCASTED TO CHANNEL!**\n\n{clean_signal}", parse_mode="Markdown")
+        
+        try:
+            # Direct Broadcast to Public/Private Kings™ Channel
+            posted_msg = await context.bot.send_message(
+                chat_id=CHANNEL_CHAT_ID,
+                text=f"📌 **KINGS™ OFFICIAL SIGNAL** 👑\n\n{clean_signal}",
+                parse_mode="Markdown"
+            )
+            sent_messages.append((posted_msg.message_id, time.time()))
+            
+            # Edit draft message in admin chat to confirm action
+            await query.edit_message_text(f"✅ **SIGNAL BROADCASTED TO KINGS™ CHANNEL!**\n\n{clean_signal}", parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Broadcast error: {e}")
+            await query.edit_message_text(
+                f"⚠️ **BROADCAST FAILED!**\n\n"
+                f"Please ensure the bot is added as an **Administrator** in your channel with 'Post Messages' rights.\n\n"
+                f"Current `CHANNEL_CHAT_ID`: `{CHANNEL_CHAT_ID}`\n"
+                f"Error details: `{e}`", 
+                parse_mode="Markdown"
+            )
 
     elif data.startswith("reject_"):
-        await query.edit_message_text("❌ **SIGNAL DRAFT REJECTED & DISCARDED.**")
+        await query.edit_message_text("❌ **SIGNAL DRAFT DISCARDED.**")
 
 # --- AUTO CLEANUP & HEARTBEAT LOOPS ---
 async def auto_cleanup_loop(app):
@@ -304,7 +324,7 @@ async def auto_cleanup_loop(app):
             for msg_id, ts in sent_messages:
                 if ts < cutoff_ts:
                     try:
-                        await app.bot.delete_message(chat_id=TELEGRAM_CHAT_ID, message_id=msg_id)
+                        await app.bot.delete_message(chat_id=CHANNEL_CHAT_ID, message_id=msg_id)
                     except Exception:
                         pass
                 else:
@@ -377,15 +397,16 @@ async def signal_loop(app):
                         f"⚠️ TAP TO APPROVE OR REJECT BEFORE BROADCASTING"
                     )
 
+                    # Subtle & Minimal Inline Buttons
                     keyboard = [
                         [
-                            InlineKeyboardButton("🚀 Post to Kings™", callback_data=f"approve_{label}"),
-                            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{label}")
+                            InlineKeyboardButton("🚀", callback_data=f"approve_{label}"),
+                            InlineKeyboardButton("❌", callback_data=f"reject_{label}")
                         ]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                    # Send draft to authorized admin, or fallback to main chat ID
+                    # Send draft to authorized admin chat
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
                     await app.bot.send_message(chat_id=target_user, text=draft_text, reply_markup=reply_markup, parse_mode="Markdown")
 
