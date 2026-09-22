@@ -14,7 +14,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 
 # --- CONFIGURATION (ENVIRONMENT VARIABLES WITH FALLBACKS) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Your Channel Chat ID or Admin Chat ID
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
 # SUPABASE DATABASE CONFIGURATION
@@ -68,14 +68,54 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Pure APA Signal Bot is Live & Operational!"
+    return "Institutional Pure APA Engine is Live & Operational!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port)
 
+# --- NEWS & BANK HOLIDAY GUARD API ---
+async def check_news_blackout():
+    """Checks if today is a major US/UK bank holiday or blackout day using Nager.Date API."""
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    year = datetime.date.today().year
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Check US Public Holidays
+            async with session.get(f"https://date.nager.at/api/v3/PublicHolidays/{year}/US", timeout=aiohttp.ClientTimeout(total=4)) as res:
+                if res.status == 200:
+                    holidays = await res.json()
+                    for h in holidays:
+                        if h.get("date") == today_str:
+                            logging.info(f"News Guard: US Bank Holiday Detected ({h.get('name')}). Pausing signal generation.")
+                            return True
+    except Exception as e:
+        logging.error(f"News Guard check error: {e}")
+    return False
+
+# --- SESSION KILLZONE TIME FILTER ---
+def is_in_session_killzone(ticker):
+    """Restricts Forex & Gold signals strictly to London and New York Session Open hours."""
+    if ticker == "BTC-USD":
+        return True  # Crypto trades 24/7
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc).time()
+    
+    # London Killzone: 07:00 UTC - 11:00 UTC (8:00 AM - 12:00 PM WAT)
+    london_start = datetime.time(7, 0)
+    london_end = datetime.time(11, 0)
+
+    # New York Killzone: 12:00 UTC - 16:00 UTC (1:00 PM - 5:00 PM WAT)
+    ny_start = datetime.time(12, 0)
+    ny_end = datetime.time(16, 0)
+
+    in_london = london_start <= now_utc <= london_end
+    in_ny = ny_start <= now_utc <= ny_end
+
+    return in_london or in_ny
+
 # --- ASYNCHRONOUS SUPABASE SIGNAL PUSHER ---
-async def push_to_supabase_async(symbol, action, entry, sl, tp):
+async def push_to_supabase_async(symbol, action, entry, sl, tp1, tp2):
     url = f"{SUPABASE_URL}/rest/v1/signals"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -88,7 +128,8 @@ async def push_to_supabase_async(symbol, action, entry, sl, tp):
         "action": action,
         "entry": float(entry),
         "sl": float(sl),
-        "tp": float(tp)
+        "tp": float(tp1),
+        "tp2": float(tp2)
     }
     try:
         async with aiohttp.ClientSession() as session:
@@ -112,6 +153,7 @@ def fetch_data(ticker, interval, period="7d"):
             df.columns = df.columns.get_level_values(0)
 
         df['atr14'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+        df['ema200'] = ta.trend.ema_indicator(df['Close'], window=200)
         return df
     except Exception as e:
         logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
@@ -119,52 +161,82 @@ def fetch_data(ticker, interval, period="7d"):
 
 # --- BROKER-COMPLIANT LOT CALCULATOR ---
 def calculate_dynamic_lot(ticker):
-    """Returns safe broker-compliant lot sizes without execution rejection."""
     return "0.01"
 
-# --- PURE APA SIGNAL ENGINE (MARKET STRUCTURE & NEAR TARGETS) ---
+# --- HIGHER TIMEFRAME (H1) TREND DETERMINATION ---
+def get_h1_trend_bias(ticker):
+    """Fetches H1 data to establish higher timeframe directional bias."""
+    df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="14d")
+    if df_h1 is None or len(df_h1) < 20:
+        return "NEUTRAL"
+    
+    latest_close = float(df_h1['Close'].iloc[-1])
+    latest_ema200 = float(df_h1['ema200'].iloc[-1]) if 'ema200' in df_h1 else latest_close
+
+    h1_recent_high = df_h1['High'].iloc[-10:-1].max()
+    h1_recent_low = df_h1['Low'].iloc[-10:-1].min()
+
+    if latest_close > latest_ema200 and latest_close > h1_recent_high * 0.998:
+        return "BULLISH"
+    elif latest_close < latest_ema200 and latest_close < h1_recent_low * 1.002:
+        return "BEARISH"
+    
+    return "NEUTRAL"
+
+# --- INSTITUTIONAL PURE APA SIGNAL ENGINE ---
 def get_pure_apa_signal(ticker):
+    # Step 1: Session Time Filter Check
+    if not is_in_session_killzone(ticker):
+        return None, None, None, None, None, None, None
+
+    # Step 2: Higher Timeframe Bias Check
+    h1_bias = get_h1_trend_bias(ticker)
+
+    # Step 3: Fetch M15 Data for Execution Entry
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 20:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
-    # Get recent candles
     c = df_m15.iloc[-2]
     prev_c = df_m15.iloc[-3]
     atr = float(c['atr14'])
 
     close_p = float(c['Close'])
-    high_p = float(c['High'])
-    low_p = float(c['Low'])
 
-    # Recent Structure Points (Swing Highs / Lows)
     recent_high = df_m15['High'].iloc[-15:-3].max()
     recent_low = df_m15['Low'].iloc[-15:-3].min()
 
     sig = None
 
-    # Pure APA Rule 1: Break of Structure (BOS) / Bullish Fair Value Gap Retest
+    # Pure APA Rule 1: Break of Structure (BOS) / FVG Retest aligned with H1 BULLISH Bias
     if close_p > recent_high and prev_c['Close'] <= recent_high:
-        sig = "BUY"
-    # Pure APA Rule 2: Market Structure Shift (MSS) / Bearish Fair Value Gap Retest
+        if h1_bias in ["BULLISH", "NEUTRAL"]:
+            sig = "BUY"
+
+    # Pure APA Rule 2: Market Structure Shift (MSS) / FVG Retest aligned with H1 BEARISH Bias
     elif close_p < recent_low and prev_c['Close'] >= recent_low:
-        sig = "SELL"
+        if h1_bias in ["BEARISH", "NEUTRAL"]:
+            sig = "SELL"
 
     if not sig:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, None
 
-    # Near Structure Take Profit & Tight Invalidation SL
+    # Multi-Target Structure (TP1: Quick Near TP | TP2: Runner Target)
+    risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.3)
+
     if sig == "BUY":
-        sl = recent_low - (atr * 0.3)
-        tp = close_p + (abs(close_p - sl) * 1.2)  # High-Probability Near TP
-        be_level = close_p + (abs(close_p - sl) * 0.5)  # Fast Auto-Breakeven Trigger
+        sl = close_p - risk_distance
+        tp1 = close_p + (risk_distance * 1.0)  # Near Target (High Probability)
+        tp2 = close_p + (risk_distance * 2.0)  # Extended Runner Target
+        be_level = close_p + (risk_distance * 0.5)  # Fast Auto-Breakeven Trigger
     else:
-        sl = recent_high + (atr * 0.3)
-        tp = close_p - (abs(sl - close_p) * 1.2)  # High-Probability Near TP
-        be_level = close_p - (abs(sl - close_p) * 0.5)  # Fast Auto-Breakeven Trigger
+        sl = close_p + risk_distance
+        tp1 = close_p - (risk_distance * 1.0)  # Near Target (High Probability)
+        tp2 = close_p - (risk_distance * 2.0)  # Extended Runner Target
+        be_level = close_p - (risk_distance * 0.5)  # Fast Auto-Breakeven Trigger
 
     rec_lot = calculate_dynamic_lot(ticker)
-    return sig, close_p, sl, tp, be_level, rec_lot
+    return sig, close_p, sl, tp1, tp2, be_level, rec_lot
 
 # --- CIRCUIT BREAKER CHECKER ---
 def check_circuit_breaker():
@@ -193,21 +265,19 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE or text == f"/start {BOT_PASSCODE}":
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 Passcode accepted! Pure APA Signal Bot is active.")
+        await update.message.reply_text("🔓 Passcode accepted! Institutional APA Signal Engine is active.")
     elif user_id in authorized_users:
         is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 Kings™ APA Engine Status: {status_msg}")
+        await update.message.reply_text(f"🟢 Kings™ Institutional Engine Status: {status_msg}")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode.", parse_mode="Markdown")
 
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processes One-Tap Telegram Button Actions (Approve/Reject)."""
     query = update.callback_query
     await query.answer()
 
     data = query.data
     if data.startswith("approve_"):
-        # Format and broadcast clean signal to channel
         original_text = query.message.text
         clean_signal = original_text.replace("🔍 [DRAFT PREVIEW] ", "").replace("⚠️ TAP TO APPROVE OR REJECT BEFORE BROADCASTING", "").strip()
         
@@ -251,7 +321,7 @@ async def heartbeat_loop(app):
             is_active, status_msg = check_circuit_breaker()
             status_icon = "🟢" if is_active else "🔴"
             
-            msg_text = f"{status_icon} *[Bot Heartbeat]* Pure APA Engine Active: {status_msg} ({formatted_wat})"
+            msg_text = f"{status_icon} *[Bot Heartbeat]* Institutional Engine Active: {status_msg} ({formatted_wat})"
             msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
             sent_messages.append((msg.message_id, time.time()))
         except Exception as e:
@@ -268,11 +338,17 @@ async def signal_loop(app):
                 await asyncio.sleep(300)
                 continue
 
+            # Check for News/Holiday Blackout
+            is_blackout = await check_news_blackout()
+            if is_blackout:
+                await asyncio.sleep(1800)
+                continue
+
             day = datetime.datetime.now(datetime.timezone.utc).weekday()
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
-                sig, entry, sl, tp, be_level, rec_lot = get_pure_apa_signal(ticker)
+                sig, entry, sl, tp1, tp2, be_level, rec_lot = get_pure_apa_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
@@ -286,12 +362,13 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
 
                     draft_text = (
-                        f"🔍 [DRAFT PREVIEW] 📊 **APA SIGNAL ALERT** 📊\n\n"
+                        f"🔍 [DRAFT PREVIEW] 📊 **INSTITUTIONAL APA ALERT** 📊\n\n"
                         f"**Asset:** {label}\n"
                         f"**Order Type:** {sig}\n\n"
                         f"• **Entry:** `{entry:.{dec}f}`\n"
                         f"• **Stop Loss:** `{sl:.{dec}f}`\n"
-                        f"• **Take Profit:** `{tp:.{dec}f}` (Near Target)\n"
+                        f"• **Take Profit 1 (Near):** `{tp1:.{dec}f}`\n"
+                        f"• **Take Profit 2 (Runner):** `{tp2:.{dec}f}`\n"
                         f"• **Breakeven Trigger:** `{be_level:.{dec}f}` (Move SL to Entry)\n"
                         f"• **Recommended Lot:** `{rec_lot}`\n\n"
                         f"🕒 **Sent:** `{time_sent_str} WAT`\n"
@@ -307,13 +384,11 @@ async def signal_loop(app):
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                    # Send to Admin Chat for Approval
                     if authorized_users:
                         admin_id = list(authorized_users)[0]
                         await app.bot.send_message(chat_id=admin_id, text=draft_text, reply_markup=reply_markup, parse_mode="Markdown")
 
-                    # Async DB log
-                    asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp=tp))
+                    asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp1=tp1, tp2=tp2))
 
         except Exception as e:
             logging.error(f"Signal Loop error: {e}")
@@ -334,7 +409,7 @@ async def main():
     asyncio.create_task(heartbeat_loop(app))
     asyncio.create_task(auto_cleanup_loop(app))
 
-    print("Pure APA Signal Bot Active & Ready...")
+    print("Institutional Pure APA Engine Active & Ready...")
 
     async with app:
         await app.start()
