@@ -10,6 +10,7 @@ import yfinance as yf
 from flask import Flask
 from threading import Thread
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.request import HTTPXRequest
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 # --- CONFIGURATION (ENVIRONMENT VARIABLES WITH FALLBACKS) ---
@@ -270,7 +271,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         is_active, status_msg = check_circuit_breaker()
         await update.message.reply_text(f"🟢 Kings™ Institutional Engine Status: {status_msg}")
     else:
-        await update.message.reply_text("🔒 *Access Denied!* Send correct passcode.", parse_mode="Markdown")
+        await update.message.reply_text("🔒 *Access Denied!* Send correct passcode in direct messages.", parse_mode="Markdown")
 
 async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -384,9 +385,9 @@ async def signal_loop(app):
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
 
-                    if authorized_users:
-                        admin_id = list(authorized_users)[0]
-                        await app.bot.send_message(chat_id=admin_id, text=draft_text, reply_markup=reply_markup, parse_mode="Markdown")
+                    # Send draft to authorized admin, or fallback to main chat ID
+                    target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+                    await app.bot.send_message(chat_id=target_user, text=draft_text, reply_markup=reply_markup, parse_mode="Markdown")
 
                     asyncio.create_task(push_to_supabase_async(symbol=label, action=sig, entry=entry, sl=sl, tp1=tp1, tp2=tp2))
 
@@ -397,7 +398,13 @@ async def signal_loop(app):
 
 # --- ENTRY POINT ---
 async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    # Increase network request timeouts for Render cold-starts
+    t_request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0
+    )
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).build()
 
     app.add_handler(CommandHandler("start", handle_text_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
