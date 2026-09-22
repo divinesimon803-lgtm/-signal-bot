@@ -222,16 +222,21 @@ def get_pure_apa_signal(ticker):
     if not sig:
         return None, None, None, None, None, None
 
-    # Single Target Structure (1:1.5 Risk-to-Reward Ratio)
+    # Dynamic Risk-to-Reward Ratio:
+    # Quick TP (1:1.1) for frequent profit hits; Wider TP (1:1.5) when strong H1 trend confirmation exists.
+    tp_multiplier = 1.1
+    if (sig == "BUY" and h1_bias == "BULLISH") or (sig == "SELL" and h1_bias == "BEARISH"):
+        tp_multiplier = 1.5
+
     risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.3)
 
     if sig == "BUY":
         sl = close_p - risk_distance
-        tp = close_p + (risk_distance * 1.5)
+        tp = close_p + (risk_distance * tp_multiplier)
         be_level = close_p + (risk_distance * 0.5)
     else:
         sl = close_p + risk_distance
-        tp = close_p - (risk_distance * 1.5)
+        tp = close_p - (risk_distance * tp_multiplier)
         be_level = close_p - (risk_distance * 0.5)
 
     rec_lot = calculate_dynamic_lot(ticker)
