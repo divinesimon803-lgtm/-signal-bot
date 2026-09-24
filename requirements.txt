@@ -1,7 +1,8 @@
-python-telegram-bot
+MetaTrader5
+yfinance
 pandas
 ta
-yfinance
-flask
 aiohttp
-requests
+python-telegram-bot==20.7
+flask
+httpx
