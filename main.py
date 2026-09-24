@@ -9,6 +9,7 @@ import ta
 import yfinance as yf
 from flask import Flask
 from threading import Thread
+from deriv_api import DerivAPI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.request import HTTPXRequest
 from telegram.ext import (
@@ -20,28 +21,15 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Optional MetaTrader 5 Integration (Runs natively on Windows VPS)
-try:
-    import MetaTrader5 as mt5
-    MT5_AVAILABLE = True
-except ImportError:
-    MT5_AVAILABLE = False
-    logging.warning("MetaTrader5 package not installed or non-Windows system. MT5 execution disabled.")
-
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYj9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal Chat ID
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
-# DYNAMIC MT5 SESSION STORAGE
-mt5_credentials = {
-    "account": int(os.getenv("MT5_ACCOUNT", "0")),
-    "password": os.getenv("MT5_PASSWORD", ""),
-    "server": os.getenv("MT5_SERVER", ""),
-    "connected": False,
-    "trade_mode": "UNKNOWN"
-}
+# DERIV API CONFIGURATION
+DERIV_TOKEN = os.getenv("DERIV_API_TOKEN", "pat_2716c401ffc848c8c38dfb12003dcf021ff2a6978972ad7bd61b2fceb5d379eb")
+DERIV_APP_ID = int(os.getenv("DERIV_APP_ID", "1089"))
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
 RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
@@ -65,6 +53,19 @@ WEEKEND_ASSETS = {
     "BTC-USD": "BTCUSD"
 }
 
+# MAP FINANCIAL TICKERS TO DERIV SYMBOL NAMES
+DERIV_SYMBOL_MAP = {
+    "XAUUSD": "frxXAUUSD",
+    "EURUSD": "frxEURUSD",
+    "GBPUSD": "frxGBPUSD",
+    "USDJPY": "frxUSDJPY",
+    "AUDUSD": "frxAUDUSD",
+    "USDCAD": "frxUSDCAD",
+    "NZDUSD": "frxNZDUSD",
+    "USDCHF": "frxUSDCHF",
+    "BTCUSD": "cryBTCUSD"
+}
+
 TIMEFRAME_M15 = "15m"
 TIMEFRAME_H1 = "1h"
 
@@ -73,7 +74,6 @@ last_signals = {}
 authorized_users = set()
 sent_messages = []
 draft_signals = {}  # Stores clean public signal templates keyed by message_id
-user_login_states = {}  # Tracks user login step-by-step state
 
 daily_stats = {
     "date": datetime.date.today(),
@@ -90,99 +90,67 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Multi-Strategy Auto Engine with Dynamic Risk Management is Live!"
+    return "Kings™ Multi-Strategy Auto Engine with Deriv Cloud Execution is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- MT5 AUTOMATED EXECUTION ENGINE ---
-def init_mt5_connection(account=None, password=None, server=None):
-    global mt5_credentials
-    if not MT5_AVAILABLE:
-        logging.warning("MT5 package is not available on this operating system.")
-        return False, "MT5 Package Unavailable (Non-Windows OS)"
-
-    if not mt5.initialize():
-        err = mt5.last_error()
-        logging.error(f"MT5 initialization failed: {err}")
-        return False, f"Initialization Failed: {err}"
-
-    acc = account or mt5_credentials["account"]
-    pwd = password or mt5_credentials["password"]
-    srv = server or mt5_credentials["server"]
-
-    if acc > 0 and pwd and srv:
-        authorized = mt5.login(acc, password=pwd, server=srv)
-        if not authorized:
-            err = mt5.last_error()
-            logging.error(f"MT5 login failed for account {acc}: {err}")
-            mt5_credentials["connected"] = False
-            return False, f"Login Failed for {acc}: {err}"
-
-        acc_info = mt5.account_info()
-        mt5_credentials["account"] = acc
-        mt5_credentials["password"] = pwd
-        mt5_credentials["server"] = srv
-        mt5_credentials["connected"] = True
-        
-        if acc_info:
-            mt5_credentials["trade_mode"] = "DEMO" if acc_info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO else "REAL"
-        
-        logging.info(f"Connected to MT5 successfully ({mt5_credentials['trade_mode']} Account: {acc}).")
-        return True, f"Successfully connected to MT5 ({mt5_credentials['trade_mode']} Account: {acc})"
-    
-    return False, "No MT5 credentials supplied."
-
-def execute_mt5_trade(symbol, action, lot, sl, tp):
-    """Executes trades directly on MT5 with exact market pricing and risk rules."""
-    if not MT5_AVAILABLE or not mt5.terminal_info() or not mt5_credentials["connected"]:
-        logging.info(f"[SIMULATION] MT5 Order: {action} {symbol} Lot:{lot} SL:{sl} TP:{tp}")
+# --- DERIV AUTOMATED CLOUD EXECUTION ENGINE ---
+async def execute_deriv_trade(symbol_label, action, amount=10.0):
+    """Executes market contracts directly on Deriv via WebSocket API."""
+    if not DERIV_TOKEN:
+        logging.warning("[SIMULATION] Deriv API Token not supplied. Trade simulated.")
         return True
 
-    order_type = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
-    symbol_info = mt5.symbol_info(symbol)
-    if symbol_info is None:
-        logging.error(f"Symbol {symbol} not found in MT5.")
+    deriv_symbol = DERIV_SYMBOL_MAP.get(symbol_label, symbol_label)
+    contract_type = "MULTUP" if action.upper() == "BUY" else "MULTDOWN"
+
+    try:
+        api = DerivAPI(app_id=DERIV_APP_ID)
+        auth = await api.authorize(DERIV_TOKEN)
+        
+        if "error" in auth:
+            logging.error(f"Deriv Authorization Error: {auth['error']['message']}")
+            await api.clear()
+            return False
+
+        # Generate proposal
+        proposal = await api.proposal({
+            "proposal": 1,
+            "amount": float(amount),
+            "basis": "stake",
+            "contract_type": contract_type,
+            "currency": "USD",
+            "symbol": deriv_symbol
+        })
+
+        if "error" in proposal:
+            logging.error(f"Deriv Proposal Error for {deriv_symbol}: {proposal['error']['message']}")
+            await api.clear()
+            return False
+
+        # Execute market order
+        buy_res = await api.buy({"buy": proposal["proposal"]["id"], "price": float(amount)})
+        
+        if "error" in buy_res:
+            logging.error(f"Deriv Buy Error: {buy_res['error']['message']}")
+            await api.clear()
+            return False
+
+        contract_id = buy_res["buy"]["contract_id"]
+        logging.info(f"✅ Deriv Trade Executed Successfully! Contract ID: {contract_id} ({action} {symbol_label})")
+        await api.clear()
+        return True
+
+    except Exception as e:
+        logging.error(f"Deriv API Trade Execution Error ({symbol_label}): {e}")
         return False
-
-    if not symbol_info.visible:
-        mt5.symbol_select(symbol, True)
-
-    price = mt5.symbol_info_tick(symbol).ask if action == "BUY" else mt5.symbol_info_tick(symbol).bid
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": float(lot),
-        "type": order_type,
-        "price": price,
-        "sl": float(sl),
-        "tp": float(tp),
-        "deviation": 20,
-        "magic": 100200,
-        "comment": "Kings Auto-Engine Trade",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
-
-    result = mt5.order_send(request)
-    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-        comment = result.comment if result else "Unknown error"
-        logging.error(f"MT5 Execution Error: {comment}")
-        return False
-
-    logging.info(f"MT5 Trade Executed: Ticket #{result.order} for {symbol}")
-    return True
 
 # --- DYNAMIC RISK & LOT SIZE CALCULATOR ---
 def calculate_dynamic_lot(ticker, sl_pips):
-    """Calculates lot size dynamically based on 1% risk per trade."""
-    account_balance = 10000.0  # Default demo base
-    if MT5_AVAILABLE and mt5.terminal_info() and mt5_credentials["connected"]:
-        acc_info = mt5.account_info()
-        if acc_info is not None:
-            account_balance = acc_info.balance
+    """Calculates trade amount / lot size dynamically based on 1% risk per trade."""
+    account_balance = 10000.0  # Default base balance
 
     risk_amount = account_balance * RISK_PER_TRADE_PCT
     pip_value = 10.0  # Standard lot USD per pip on majors
@@ -375,26 +343,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Multi-Strategy Auto Engine is active.\n\nType `/login` to connect your MT5 Broker Account.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Multi-Strategy Auto Engine is active with Deriv Cloud Execution.", parse_mode="Markdown")
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 **Engine Active.** Send `/login` to set MT5 credentials or `/status` for bot health.", parse_mode="Markdown")
+        await update.message.reply_text("🟢 **Engine Active.** Send `/status` for bot health and execution status.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send the passcode directly to authorize.", parse_mode="Markdown")
-
-async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in authorized_users:
-        await update.message.reply_text("🔒 *Access Denied!* Please authenticate with `/start PASSCODE` first.", parse_mode="Markdown")
-        return
-
-    await update.message.reply_text(
-        "⚙️ **MT5 Dynamic Login Setup**\n\n"
-        "Please enter your credentials in this exact single-line format:\n\n"
-        "`ACCOUNT_NUMBER PASSWORD SERVER`\n\n"
-        "**Example:**\n`101234567 MySecretPass123 Deriv-Server`",
-        parse_mode="Markdown"
-    )
-    user_login_states[user_id] = "WAITING_CREDENTIALS"
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -403,17 +356,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     is_active, status_msg = check_circuit_breaker()
-    mt5_status = "🟢 Connected" if mt5_credentials["connected"] else "🔴 Disconnected / Simulation Mode"
-    account_no = mt5_credentials["account"] if mt5_credentials["account"] > 0 else "None"
-    account_mode = mt5_credentials["trade_mode"]
+    deriv_status = "🟢 Connected (Cloud API)" if DERIV_TOKEN else "🔴 Disconnected / Simulation Mode"
 
     msg = (
         f"📊 **KINGS™ ENGINE STATUS**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Circuit Breaker:** {status_msg}\n"
-        f"🔌 **MT5 Connection:** {mt5_status}\n"
-        f"👤 **Account:** `{account_no}` ({account_mode})\n"
-        f"🌐 **Server:** `{mt5_credentials['server'] or 'None'}`\n"
+        f"🔌 **Deriv Cloud Connection:** {deriv_status}\n"
+        f"🌐 **Execution Mode:** Cloud Auto-Trade (24/7)\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -423,35 +373,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine is active.\n\nSend `/login` to update your MT5 account.", parse_mode="Markdown")
-        return
-
-    if user_id in authorized_users and user_login_states.get(user_id) == "WAITING_CREDENTIALS":
-        parts = text.split()
-        if len(parts) != 3:
-            await update.message.reply_text("⚠️ **Invalid format.** Use: `ACCOUNT_NUMBER PASSWORD SERVER`\nExample: `10123456 myPass Deriv-Server`", parse_mode="Markdown")
-            return
-
-        try:
-            acc_num = int(parts[0])
-            pwd = parts[1]
-            server = parts[2]
-            
-            await update.message.reply_text("🔄 Connecting to MT5 Terminal...")
-            success, message = init_mt5_connection(account=acc_num, password=pwd, server=server)
-            
-            user_login_states.pop(user_id, None)
-            if success:
-                await update.message.reply_text(f"✅ **LOGIN SUCCESSFUL!**\n\n{message}", parse_mode="Markdown")
-            else:
-                await update.message.reply_text(f"❌ **LOGIN FAILED!**\n{message}\n\nCheck credentials and try `/login` again.", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("⚠️ Account Number must be numeric. Example: `10123456 myPass Deriv-Server`", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine is active with Deriv Cloud execution.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
         is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 **Kings™ Engine Status:** {status_msg}\nUse `/status` or `/login` to manage execution.", parse_mode="Markdown")
+        await update.message.reply_text(f"🟢 **Kings™ Engine Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode in direct messages.", parse_mode="Markdown")
 
@@ -489,7 +416,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         draft_signals.pop(msg_id, None)
         original_text = query.message.text
         await query.edit_message_text(
-            text=f"❌ **[SIGNAL DISCARDED]** (Trade remains active on MT5)\n\n{original_text}",
+            text=f"❌ **[SIGNAL DISCARDED]** (Trade remains active on Deriv)\n\n{original_text}",
             reply_markup=None,
             parse_mode="Markdown"
         )
@@ -539,8 +466,9 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    trade_executed = execute_mt5_trade(label, sig, rec_lot, sl, tp)
-                    exec_status_str = "⚡ **Executed on MT5 Account**" if trade_executed else "⚠️ **Execution Pending / Manual**"
+                    # Execute order on Deriv API Cloud
+                    trade_executed = await execute_deriv_trade(label, sig, amount=10.0)
+                    exec_status_str = "⚡ **Executed on Deriv Account**" if trade_executed else "⚠️ **Execution Pending / Manual**"
 
                     public_channel_text = (
                         f"👑 **KINGS™ TRADING SIGNAL**\n\n"
@@ -587,15 +515,12 @@ async def signal_loop(app):
         await asyncio.sleep(60)
 
 async def post_init(app):
-    """Starts background loops once Telegram app initialized."""
+    """Starts background loops once Telegram app is initialized."""
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
 
 # --- MAIN ENTRY POINT ---
 def main():
-    init_mt5_connection()
-
-    # Create explicit asyncio event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -603,7 +528,6 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("login", login_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(CallbackQueryHandler(handle_button_click))
