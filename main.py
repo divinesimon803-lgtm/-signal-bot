@@ -34,13 +34,14 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-
-# MT5 ACCOUNT CREDENTIALS
-MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "0"))
-MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
-MT5_SERVER = os.getenv("MT5_SERVER", "")
+# DYNAMIC MT5 SESSION STORAGE
+mt5_credentials = {
+    "account": int(os.getenv("MT5_ACCOUNT", "0")),
+    "password": os.getenv("MT5_PASSWORD", ""),
+    "server": os.getenv("MT5_SERVER", ""),
+    "connected": False,
+    "trade_mode": "UNKNOWN"
+}
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
 RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
@@ -49,7 +50,7 @@ MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",             # Gold Futures (Correct Yahoo Finance Ticker)
+    "GC=F": "XAUUSD",             # Gold Futures
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -72,6 +73,7 @@ last_signals = {}
 authorized_users = set()
 sent_messages = []
 draft_signals = {}  # Stores clean public signal templates keyed by message_id
+user_login_states = {}  # Tracks user login step-by-step state
 
 daily_stats = {
     "date": datetime.date.today(),
@@ -95,23 +97,46 @@ def run_flask():
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # --- MT5 AUTOMATED EXECUTION ENGINE ---
-def init_mt5_connection():
+def init_mt5_connection(account=None, password=None, server=None):
+    global mt5_credentials
     if not MT5_AVAILABLE:
-        return False
+        logging.warning("MT5 package is not available on this operating system.")
+        return False, "MT5 Package Unavailable (Non-Windows OS)"
+
     if not mt5.initialize():
-        logging.error(f"MT5 initialization failed: {mt5.last_error()}")
-        return False
-    if MT5_ACCOUNT > 0:
-        authorized = mt5.login(MT5_ACCOUNT, password=MT5_PASSWORD, server=MT5_SERVER)
+        err = mt5.last_error()
+        logging.error(f"MT5 initialization failed: {err}")
+        return False, f"Initialization Failed: {err}"
+
+    acc = account or mt5_credentials["account"]
+    pwd = password or mt5_credentials["password"]
+    srv = server or mt5_credentials["server"]
+
+    if acc > 0 and pwd and srv:
+        authorized = mt5.login(acc, password=pwd, server=srv)
         if not authorized:
-            logging.error(f"MT5 login failed for account {MT5_ACCOUNT}: {mt5.last_error()}")
-            return False
-    logging.info("Connected to MT5 successfully.")
-    return True
+            err = mt5.last_error()
+            logging.error(f"MT5 login failed for account {acc}: {err}")
+            mt5_credentials["connected"] = False
+            return False, f"Login Failed for {acc}: {err}"
+
+        acc_info = mt5.account_info()
+        mt5_credentials["account"] = acc
+        mt5_credentials["password"] = pwd
+        mt5_credentials["server"] = srv
+        mt5_credentials["connected"] = True
+        
+        if acc_info:
+            mt5_credentials["trade_mode"] = "DEMO" if acc_info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO else "REAL"
+        
+        logging.info(f"Connected to MT5 successfully ({mt5_credentials['trade_mode']} Account: {acc}).")
+        return True, f"Successfully connected to MT5 ({mt5_credentials['trade_mode']} Account: {acc})"
+    
+    return False, "No MT5 credentials supplied."
 
 def execute_mt5_trade(symbol, action, lot, sl, tp):
     """Executes trades directly on MT5 with exact market pricing and risk rules."""
-    if not MT5_AVAILABLE or not mt5.terminal_info():
+    if not MT5_AVAILABLE or not mt5.terminal_info() or not mt5_credentials["connected"]:
         logging.info(f"[SIMULATION] MT5 Order: {action} {symbol} Lot:{lot} SL:{sl} TP:{tp}")
         return True
 
@@ -142,8 +167,9 @@ def execute_mt5_trade(symbol, action, lot, sl, tp):
     }
 
     result = mt5.order_send(request)
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logging.error(f"MT5 Execution Error: {result.comment}")
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        comment = result.comment if result else "Unknown error"
+        logging.error(f"MT5 Execution Error: {comment}")
         return False
 
     logging.info(f"MT5 Trade Executed: Ticket #{result.order} for {symbol}")
@@ -153,7 +179,7 @@ def execute_mt5_trade(symbol, action, lot, sl, tp):
 def calculate_dynamic_lot(ticker, sl_pips):
     """Calculates lot size dynamically based on 1% risk per trade."""
     account_balance = 10000.0  # Default demo base
-    if MT5_AVAILABLE and mt5.terminal_info():
+    if MT5_AVAILABLE and mt5.terminal_info() and mt5_credentials["connected"]:
         acc_info = mt5.account_info()
         if acc_info is not None:
             account_balance = acc_info.balance
@@ -342,17 +368,90 @@ def check_circuit_breaker():
 
     return True, "Trading Active"
 
-# --- TELEGRAM HANDLERS ---
+# --- TELEGRAM COMMAND HANDLERS ---
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args = context.args
+
+    if args and args[0] == BOT_PASSCODE:
+        authorized_users.add(user_id)
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Multi-Strategy Auto Engine is active.\n\nType `/login` to connect your MT5 Broker Account.", parse_mode="Markdown")
+    elif user_id in authorized_users:
+        await update.message.reply_text("🟢 **Engine Active.** Send `/login` to set MT5 credentials or `/status` for bot health.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("🔒 *Access Denied!* Send the passcode directly to authorize.", parse_mode="Markdown")
+
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.message.reply_text("🔒 *Access Denied!* Please authenticate with `/start PASSCODE` first.", parse_mode="Markdown")
+        return
+
+    await update.message.reply_text(
+        "⚙️ **MT5 Dynamic Login Setup**\n\n"
+        "Please enter your credentials in this exact single-line format:\n\n"
+        "`ACCOUNT_NUMBER PASSWORD SERVER`\n\n"
+        "**Example:**\n`101234567 MySecretPass123 Deriv-Server`",
+        parse_mode="Markdown"
+    )
+    user_login_states[user_id] = "WAITING_CREDENTIALS"
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in authorized_users:
+        await update.message.reply_text("🔒 Access Denied.")
+        return
+
+    is_active, status_msg = check_circuit_breaker()
+    mt5_status = "🟢 Connected" if mt5_credentials["connected"] else "🔴 Disconnected / Simulation Mode"
+    account_no = mt5_credentials["account"] if mt5_credentials["account"] > 0 else "None"
+    account_mode = mt5_credentials["trade_mode"]
+
+    msg = (
+        f"📊 **KINGS™ ENGINE STATUS**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"⚙️ **Circuit Breaker:** {status_msg}\n"
+        f"🔌 **MT5 Connection:** {mt5_status}\n"
+        f"👤 **Account:** `{account_no}` ({account_mode})\n"
+        f"🌐 **Server:** `{mt5_credentials['server'] or 'None'}`\n"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip() if update.message and update.message.text else ""
 
-    if text == BOT_PASSCODE or text == f"/start {BOT_PASSCODE}":
+    if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 Passcode accepted! Multi-Strategy Auto Engine is active.")
-    elif user_id in authorized_users:
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine is active.\n\nSend `/login` to update your MT5 account.", parse_mode="Markdown")
+        return
+
+    if user_id in authorized_users and user_login_states.get(user_id) == "WAITING_CREDENTIALS":
+        parts = text.split()
+        if len(parts) != 3:
+            await update.message.reply_text("⚠️ **Invalid format.** Use: `ACCOUNT_NUMBER PASSWORD SERVER`\nExample: `10123456 myPass Deriv-Server`", parse_mode="Markdown")
+            return
+
+        try:
+            acc_num = int(parts[0])
+            pwd = parts[1]
+            server = parts[2]
+            
+            await update.message.reply_text("🔄 Connecting to MT5 Terminal...")
+            success, message = init_mt5_connection(account=acc_num, password=pwd, server=server)
+            
+            user_login_states.pop(user_id, None)
+            if success:
+                await update.message.reply_text(f"✅ **LOGIN SUCCESSFUL!**\n\n{message}", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"❌ **LOGIN FAILED!**\n{message}\n\nCheck credentials and try `/login` again.", parse_mode="Markdown")
+        except ValueError:
+            await update.message.reply_text("⚠️ Account Number must be numeric. Example: `10123456 myPass Deriv-Server`", parse_mode="Markdown")
+        return
+
+    if user_id in authorized_users:
         is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 Kings™ Engine Status: {status_msg}")
+        await update.message.reply_text(f"🟢 **Kings™ Engine Status:** {status_msg}\nUse `/status` or `/login` to manage execution.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode in direct messages.", parse_mode="Markdown")
 
@@ -496,14 +595,16 @@ async def post_init(app):
 def main():
     init_mt5_connection()
 
-    # Create and set explicit asyncio event loop (Fixes Python 3.14 RuntimeError)
+    # Create explicit asyncio event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).build()
 
-    app.add_handler(CommandHandler("start", handle_text_message))
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("login", login_command))
+    app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(CallbackQueryHandler(handle_button_click))
 
