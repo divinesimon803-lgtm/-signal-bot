@@ -29,8 +29,8 @@ BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
 # --- MT5 BROKER CONFIGURATION ---
 # Replace these with your actual Deriv MT5 Demo account details
-MT5_LOGIN = int(os.getenv("MT5_LOGIN", "YOUR_MT5_ACCOUNT_NUMBER"))  # e.g., 12345678
-MT5_PASSWORD = os.getenv("MT5_PASSWORD", "YOUR_MT5_PASSWORD")       # e.g., "YourPassword"
+MT5_LOGIN = int(os.getenv("MT5_LOGIN", "32403739"))  # e.g., 12345678
+MT5_PASSWORD = os.getenv("MT5_PASSWORD", "Divine2008.")       # e.g., "YourPassword"
 MT5_SERVER = os.getenv("MT5_SERVER", "Deriv-Demo")                 # e.g., "Deriv-Demo"
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
