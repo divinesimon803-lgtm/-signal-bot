@@ -38,7 +38,7 @@ MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",              # Gold Futures
+    "GC=F": "XAUUSD",             # Gold Futures
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
