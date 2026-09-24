@@ -28,14 +28,15 @@ except ImportError:
     MT5_AVAILABLE = False
     logging.warning("MetaTrader5 package not installed or non-Windows system. MT5 execution disabled.")
 
-# --- CONFIGURATION (UPDATED TELEGRAM TOKEN & FALLBACKS) ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYJ9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
+# --- CONFIGURATION ---
+# IMPORTANT: Pass a VALID token generated from @BotFather
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_VALID_TELEGRAM_BOT_TOKEN_HERE")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal Chat ID
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://khmtegoloiszskwjmuku.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 # MT5 ACCOUNT CREDENTIALS
 MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "0"))
@@ -47,9 +48,9 @@ RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
 MAX_DAILY_LOSS_PCT = 0.05       # Max 5% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
-# STRICT ASSET ROSTER (UPDATED GOLD TICKER TO GC=F FOR YFINANCE ACCURACY)
+# STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",
+    "GC=F": "XAUUSD",         # Correct Gold ticker for yfinance
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -81,7 +82,7 @@ daily_stats = {
     "pause_until": None
 }
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- FLASK WEB SERVER ---
 flask_app = Flask(__name__)
@@ -162,7 +163,7 @@ def calculate_dynamic_lot(ticker, sl_pips):
     pip_value = 10.0  # Standard lot USD per pip on majors
     if "JPY" in ticker:
         pip_value = 6.5
-    elif "GC=F" in ticker or "XAU" in ticker or "BTC" in ticker:
+    elif ticker in ["GC=F", "BTC-USD"]:
         pip_value = 1.0
 
     if sl_pips <= 0:
@@ -255,20 +256,16 @@ def get_multi_strategy_signal(ticker):
     recent_high = df_m15['High'].iloc[-15:-3].max()
     recent_low = df_m15['Low'].iloc[-15:-3].min()
 
-    # Strategy 1: Action Price Action (BOS / MSS)
     apa_buy = close_p > recent_high and prev_c['Close'] <= recent_high
     apa_sell = close_p < recent_low and prev_c['Close'] >= recent_low
 
-    # Strategy 2: EMA Trend Following
     ema_buy = ema50 > ema200 and close_p > ema50
     ema_sell = ema50 < ema200 and close_p < ema50
 
-    # Strategy 3: RSI Filter
     rsi_buy = rsi < 65 and rsi > 40
     rsi_sell = rsi > 35 and rsi < 60
 
     sig = None
-    # Require Confluence: Higher Timeframe Bias + (APA or EMA strategy agreement)
     if h1_bias == "BULLISH" and (apa_buy or ema_buy) and rsi_buy:
         sig = "BUY"
     elif h1_bias == "BEARISH" and (apa_sell or ema_sell) and rsi_sell:
@@ -415,11 +412,9 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    # 1. Execute directly on MT5 Account first
                     trade_executed = execute_mt5_trade(label, sig, rec_lot, sl, tp)
                     exec_status_str = "⚡ **Executed on MT5 Account**" if trade_executed else "⚠️ **Execution Pending / Manual**"
 
-                    # 2. Public Channel Format
                     public_channel_text = (
                         f"👑 **KINGS™ TRADING SIGNAL**\n\n"
                         f"📌 **Pair:** `{label}`\n"
@@ -432,7 +427,6 @@ async def signal_loop(app):
                         f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`"
                     )
 
-                    # 3. Private Admin Draft Preview
                     admin_preview_text = (
                         f"📋 **NEW SIGNAL & TRADE DRAFT**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -481,7 +475,7 @@ async def main():
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
 
-    print("Kings™ Multi-Strategy Auto Engine Active & Running...")
+    logging.info("Kings™ Multi-Strategy Auto Engine Active & Running...")
 
     async with app:
         await app.start()
