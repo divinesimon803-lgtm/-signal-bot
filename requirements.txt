@@ -2,6 +2,6 @@ flask
 yfinance
 pandas
 ta
-deriv-api
+python-deriv-api
 python-telegram-bot
 aiohttp
