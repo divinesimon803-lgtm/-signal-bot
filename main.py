@@ -38,7 +38,7 @@ MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",             # Gold Futures
+    "GC=F": "XAUUSD",              # Gold Futures
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -470,15 +470,14 @@ async def signal_loop(app):
                     trade_executed = await execute_deriv_trade(label, sig, amount=10.0)
                     exec_status_str = "⚡ **LIVE TRADE EXECUTED AUTOMATICALLY ON DERIV**" if trade_executed else "⚠️ **Deriv Execution Failed**"
 
+                    # Professional format without header and lot size
                     public_channel_text = (
-                        f"👑 **KINGS™ TRADING SIGNAL**\n\n"
                         f"📌 **Pair:** `{label}`\n"
                         f"📈 **Action:** {dir_emoji} **{sig}**\n\n"
                         f"🔹 **Entry:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n\n"
-                        f"🛡️ **Breakeven Level:** `{be_level:.{dec}f}`\n"
-                        f"📊 **Lot Size:** `{rec_lot}`\n\n"
+                        f"🛡️ **Breakeven Level:** `{be_level:.{dec}f}`\n\n"
                         f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`"
                     )
 
