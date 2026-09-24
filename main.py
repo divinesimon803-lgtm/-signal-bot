@@ -28,8 +28,8 @@ except ImportError:
     MT5_AVAILABLE = False
     logging.warning("MetaTrader5 package not installed or non-Windows system. MT5 execution disabled.")
 
-# --- CONFIGURATION (ENVIRONMENT VARIABLES WITH FALLBACKS) ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAGZAWFJoVf3pK1qpn4CdbA_95NYy9TcLt4")
+# --- CONFIGURATION (UPDATED TELEGRAM TOKEN & FALLBACKS) ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYJ9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal Chat ID
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
@@ -37,7 +37,7 @@ BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://khmtegoloiszskwjmuku.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "sb_publishable_N4BfssoiokI-o002sw6eGQ_K5fMGcjG")
 
-# MT5 ACCOUNT CREDENTIALS (Configure via ENV or fallback)
+# MT5 ACCOUNT CREDENTIALS
 MT5_ACCOUNT = int(os.getenv("MT5_ACCOUNT", "0"))
 MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
 MT5_SERVER = os.getenv("MT5_SERVER", "")
@@ -47,9 +47,9 @@ RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
 MAX_DAILY_LOSS_PCT = 0.05       # Max 5% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
-# STRICT ASSET ROSTER
+# STRICT ASSET ROSTER (UPDATED GOLD TICKER TO GC=F FOR YFINANCE ACCURACY)
 WEEKDAY_ASSETS = {
-    "XAUUSD=X": "XAUUSD",
+    "GC=F": "XAUUSD",
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -162,7 +162,7 @@ def calculate_dynamic_lot(ticker, sl_pips):
     pip_value = 10.0  # Standard lot USD per pip on majors
     if "JPY" in ticker:
         pip_value = 6.5
-    elif "XAU" in ticker or "BTC" in ticker:
+    elif "GC=F" in ticker or "XAU" in ticker or "BTC" in ticker:
         pip_value = 1.0
 
     if sl_pips <= 0:
@@ -234,7 +234,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-STRATEGY CONFLUENCE ENGINE (APA + EMA TREND + RSI REVERSION) ---
+# --- MULTI-STRATEGY CONFLUENCE ENGINE ---
 def get_multi_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
         return None, None, None, None, None, None
@@ -407,7 +407,7 @@ async def signal_loop(app):
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
-                    dec = 3 if ticker == "JPY=X" else (2 if ticker in ["BTC-USD", "XAUUSD=X"] else 4)
+                    dec = 3 if ticker == "JPY=X" else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                     expires_wat = now_wat + datetime.timedelta(minutes=15)
