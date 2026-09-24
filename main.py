@@ -33,7 +33,7 @@ DERIV_APP_ID = int(os.getenv("DERIV_APP_ID", "1089"))
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
 RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
-MAX_DAILY_LOSS_PCT = 0.05       # Max 5% total account loss per day
+MAX_DAILY_LOSS_PCT = 0.05        # Max 5% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
@@ -416,7 +416,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         draft_signals.pop(msg_id, None)
         original_text = query.message.text
         await query.edit_message_text(
-            text=f"❌ **[SIGNAL DISCARDED]** (Trade remains active on Deriv)\n\n{original_text}",
+            text=f"❌ **[SIGNAL DISCARDED FROM CHANNEL]** (Live trade remains active on your Deriv account)\n\n{original_text}",
             reply_markup=None,
             parse_mode="Markdown"
         )
@@ -466,9 +466,9 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    # Execute order on Deriv API Cloud
+                    # ⚡ AUTOMATICALLY EXECUTE LIVE TRADE ON DERIV INSTANTLY ⚡
                     trade_executed = await execute_deriv_trade(label, sig, amount=10.0)
-                    exec_status_str = "⚡ **Executed on Deriv Account**" if trade_executed else "⚠️ **Execution Pending / Manual**"
+                    exec_status_str = "⚡ **LIVE TRADE EXECUTED AUTOMATICALLY ON DERIV**" if trade_executed else "⚠️ **Deriv Execution Failed**"
 
                     public_channel_text = (
                         f"👑 **KINGS™ TRADING SIGNAL**\n\n"
@@ -483,7 +483,7 @@ async def signal_loop(app):
                     )
 
                     admin_preview_text = (
-                        f"📋 **NEW SIGNAL & TRADE DRAFT**\n"
+                        f"📋 **NEW SIGNAL & AUTO-TRADE ALERT**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"{exec_status_str}\n\n"
                         f"{public_channel_text}\n"
