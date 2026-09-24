@@ -1,4 +1,3 @@
-MetaTrader5
 yfinance
 pandas
 ta
