@@ -26,10 +26,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
-# RISK & ACCOUNT SAFETY CONFIGURATION (Used for Lot/Risk sizing display)
+# RISK & ACCOUNT SAFETY CONFIGURATION
 RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
 MAX_DAILY_LOSS_PCT = 0.05      # Max 5% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 3     # Stop scanning after 3 straight losses
+MAX_DAILY_WINS = 3             # Daily Target Lock: Pause after 3 wins (Adjustable to 3 or 4)
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
@@ -56,14 +57,15 @@ last_signals = {}
 authorized_users = set()
 sent_messages = []
 draft_signals = {}  # Stores clean public signal templates keyed by message_id
-active_trades = {}  # Tracks ongoing trades for lifecycle management: {label: {details}}
+active_trades = {}  # Tracks ongoing trades for lifecycle management
 
 daily_stats = {
     "date": datetime.date.today(),
     "pnl_usd": 0.0,
     "consecutive_losses": 0,
+    "daily_wins": 0,
     "trading_paused": False,
-    "pause_until": None
+    "pause_reason": None
 }
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -81,9 +83,7 @@ def run_flask():
 
 # --- DYNAMIC RISK & LOT SIZE CALCULATOR ---
 def calculate_dynamic_lot(ticker, sl_pips):
-    """Calculates trade amount / lot size dynamically based on 1% risk per trade for display purposes."""
     account_balance = 10000.0  # Default base balance
-
     risk_amount = account_balance * RISK_PER_TRADE_PCT
     pip_value = 10.0  # Standard lot USD per pip on majors
     if "JPY" in ticker:
@@ -134,7 +134,6 @@ def fetch_data(ticker, interval, period="7d"):
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
         
         if df is None or df.empty:
-            logging.warning(f"No data returned for {ticker} ({interval})")
             return None
 
         if isinstance(df.columns, pd.MultiIndex):
@@ -144,7 +143,6 @@ def fetch_data(ticker, interval, period="7d"):
 
         required_cols = ['High', 'Low', 'Close']
         if not all(col in df.columns for col in required_cols):
-            logging.error(f"Missing required price columns for {ticker} ({interval})")
             return None
 
         high_series = pd.to_numeric(df['High'].squeeze(), errors='coerce')
@@ -152,7 +150,6 @@ def fetch_data(ticker, interval, period="7d"):
         close_series = pd.to_numeric(df['Close'].squeeze(), errors='coerce')
 
         if len(close_series.dropna()) < 30:
-            logging.warning(f"Insufficient data points for {ticker} ({interval})")
             return None
 
         df['atr14'] = ta.volatility.average_true_range(high_series, low_series, close_series, window=14)
@@ -163,7 +160,7 @@ def fetch_data(ticker, interval, period="7d"):
         return df
 
     except Exception as e:
-        logging.error(f"Error fetching/processing data for {ticker} ({interval}): {e}")
+        logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
         return None
 
 def get_h1_trend_bias(ticker):
@@ -180,7 +177,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-STRATEGY CONFLUENCE ENGINE ---
+# --- MULTI-STRATEGY CONFLUENCE ENGINE (High Expectancy 1:2 / 1:3 Filter) ---
 def get_multi_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
         return None, None, None, None, None, None
@@ -211,8 +208,9 @@ def get_multi_strategy_signal(ticker):
     ema_buy = ema50 > ema200 and close_p > ema50
     ema_sell = ema50 < ema200 and close_p < ema50
 
-    rsi_buy = rsi < 65 and rsi > 40
-    rsi_sell = rsi > 35 and rsi < 60
+    # Hyper-selective momentum filtering
+    rsi_buy = rsi < 65 and rsi > 45
+    rsi_sell = rsi > 35 and rsi < 55
 
     sig = None
     if h1_bias == "BULLISH" and (apa_buy or ema_buy) and rsi_buy:
@@ -223,23 +221,24 @@ def get_multi_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None
 
-    tp_multiplier = 1.5 if (sig == "BUY" and h1_bias == "BULLISH") or (sig == "SELL" and h1_bias == "BEARISH") else 1.2
+    # Targeting high Risk-to-Reward (1:2 to 1:3)
+    tp_multiplier = 2.5 
     risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.3)
     sl_pips = risk_distance * 10000 if "JPY" not in ticker else risk_distance * 100
 
     if sig == "BUY":
         sl = close_p - risk_distance
         tp = close_p + (risk_distance * tp_multiplier)
-        be_level = close_p + (risk_distance * 0.5)
+        be_level = close_p + (risk_distance * 0.3)  # Trigger aggressive breakeven early at 30% progress
     else:
         sl = close_p + risk_distance
         tp = close_p - (risk_distance * tp_multiplier)
-        be_level = close_p - (risk_distance * 0.5)
+        be_level = close_p - (risk_distance * 0.3)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_pips)
     return sig, close_p, sl, tp, be_level, rec_lot
 
-# --- CIRCUIT BREAKER ---
+# --- CIRCUIT BREAKER & DAILY TARGET LOCK ---
 def check_circuit_breaker():
     global daily_stats
     today = datetime.date.today()
@@ -249,17 +248,22 @@ def check_circuit_breaker():
             "date": today,
             "pnl_usd": 0.0,
             "consecutive_losses": 0,
+            "daily_wins": 0,
             "trading_paused": False,
-            "pause_until": None
+            "pause_reason": None
         }
         return True, "Trading Active"
+
+    if daily_stats["daily_wins"] >= MAX_DAILY_WINS:
+        daily_stats["trading_paused"] = True
+        return False, f"Target Locked: Secured {MAX_DAILY_WINS} wins today! Session closed to preserve blue profits 💙"
 
     if daily_stats["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
         daily_stats["trading_paused"] = True
         return False, f"Paused: Hit max {MAX_CONSECUTIVE_LOSSES} consecutive losses today."
 
     if daily_stats["trading_paused"]:
-        return False, "Trading paused by Risk Circuit Breaker."
+        return False, daily_stats.get("pause_reason", "Trading paused by Risk Circuit Breaker.")
 
     return True, "Trading Active"
 
@@ -270,7 +274,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Active Trade Lifecycle Mentor active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Profit Hunter active 💙🙌🏿🙏🏿", parse_mode="Markdown")
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 **Engine Active.** Send `/status` for bot health.", parse_mode="Markdown")
     else:
@@ -288,8 +292,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 **KINGS™ ENGINE STATUS**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Circuit Breaker:** {status_msg}\n"
-        f"🎯 **Active Trades Monitored:** {len(active_trades)}\n"
-        f"🛡️ **Mentor Mode:** Active Trade Lifecycle Guidance Enabled\n"
+        f"🎯 **Today's Wins:** {daily_stats['daily_wins']} / {MAX_DAILY_WINS}\n"
+        f"🛡️ **Active Trades Monitored:** {len(active_trades)}\n"
+        f"💙 **Motto:** We pray for blue 💙🙌🏿🙏🏿\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -299,12 +304,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Profit Engine active 💙.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
         is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 **Kings™ Engine Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
+        await update.message.reply_text(f"🟢 **Kings™ Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode in direct messages.", parse_mode="Markdown")
 
@@ -325,7 +330,6 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         public_signal_text = signal_info["text"]
         
-        # Register into active trade lifecycle monitor
         active_trades[ticker_key] = {
             "label": ticker_key,
             "type": signal_info["type"],
@@ -346,7 +350,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             sent_messages.append((posted_msg.message_id, time.time()))
             original_text = query.message.text
             await query.edit_message_text(
-                text=f"✅ **[APPROVED & POSTED TO CHANNEL]**\n🛡️ *Lifecycle Mentor now tracking {ticker_key}*\n\n{original_text}",
+                text=f"✅ **[APPROVED & POSTED TO CHANNEL]**\n🛡️ *Lifecycle Mentor tracking {ticker_key}*\n\n{original_text}",
                 reply_markup=None,
                 parse_mode="Markdown"
             )
@@ -364,12 +368,11 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown"
         )
 
-# --- ACTIVE TRADE LIFECYCLE MENTOR LOOP ---
+# --- ACTIVE TRADE LIFECYCLE MENTOR LOOP (With Professional Channel Messages) ---
 async def trade_lifecycle_mentor_loop(app):
-    """Continuously monitors approved trades and guides the user step-by-step."""
-    global active_trades
+    global active_trades, daily_stats
     while True:
-        await asyncio.sleep(60) # check every minute
+        await asyncio.sleep(60)
         if not active_trades:
             continue
 
@@ -377,7 +380,6 @@ async def trade_lifecycle_mentor_loop(app):
 
         for label, trade in list(active_trades.items()):
             try:
-                # Find corresponding yfinance ticker
                 y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), None)
                 if not y_ticker and label == "BTC-USD":
                     y_ticker = "BTC-USD"
@@ -390,7 +392,6 @@ async def trade_lifecycle_mentor_loop(app):
                     continue
 
                 current_price = float(df_live['Close'].iloc[-1])
-                current_rsi = float(df_live['rsi14'].iloc[-1]) if 'rsi14' in df_live else 50.0
                 trade_type = trade["type"]
                 entry = trade["entry"]
                 sl = trade["sl"]
@@ -399,96 +400,55 @@ async def trade_lifecycle_mentor_loop(app):
 
                 dec = 3 if "JPY" in y_ticker else (2 if y_ticker in ["BTC-USD", "GC=F"] else 4)
 
-                # Check if TP or SL hit
-                if trade_type == "BUY":
-                    if current_price >= tp:
-                        msg = (
-                            f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"✅ Price reached Take Profit at `{tp:.{dec}f}`!\n"
-                            f"💡 *Professional Reason:* Bullish momentum successfully realized full target expansion. Close the trade and secure profits."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                        active_trades.pop(label, None)
-                        continue
-                    elif current_price <= sl:
-                        msg = (
-                            f"🛑 **[STOP LOSS HIT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n"
-                            f"💡 *Professional Reason:* Market invalidated the structure. Accept the controlled risk loss, keeping your capital safe per risk rules."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                        active_trades.pop(label, None)
-                        daily_stats["consecutive_losses"] += 1
-                        continue
+                # --- TAKE PROFIT HIT ---
+                if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
+                    daily_stats["daily_wins"] += 1
+                    msg = (
+                        f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ Price successfully secured Take Profit at `{tp:.{dec}f}`!\n\n"
+                        f"📢 **Ready-to-Send Channel Message:**\n"
+                        f"───────────────────\n"
+                        f"🎯 **TP HIT! {label} Target Smashed!**\n"
+                        f"We executed this with absolute precision and locked in our gains cleanly. Another flawless execution for the family! We pray for blue 💙🙌🏿🙏🏿.\n"
+                        f"───────────────────"
+                    )
+                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    active_trades.pop(label, None)
+                    continue
 
-                    # Breakeven Check
-                    if not trade["be_hit"] and current_price >= be_level:
-                        trade["be_hit"] = True
-                        msg = (
-                            f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📈 Price has pushed cleanly in our favor to `{current_price:.{dec}f}`.\n"
-                            f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n"
-                            f"💡 *Professional Reason:* Lock in zero-risk status. All risk is now removed from the table."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                # --- STOP LOSS HIT ---
+                elif (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
+                    msg = (
+                        f"🛑 **[STOP LOSS HIT] - {label}**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n\n"
+                        f"📢 **Ready-to-Send Channel Message:**\n"
+                        f"───────────────────\n"
+                        f"🛡️ **Trade Update - {label}**\n"
+                        f"Market structure shifted unexpectedly, but thank God we strictly managed our risk and locked our earlier protections in place. Capital preservation is key to long-term dominance. We bounce back stronger! 💙🙏🏿\n"
+                        f"───────────────────"
+                    )
+                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    active_trades.pop(label, None)
+                    daily_stats["consecutive_losses"] += 1
+                    continue
 
-                    # Early Exit / Reversal Warning
-                    elif current_rsi > 78:
-                        msg = (
-                            f"⚠️ **[MENTOR GUIDANCE: EARLY EXIT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 **{label}** is showing overbought RSI exhaustion (`{current_rsi:.1f}`).\n"
-                            f"👉 **Action Required:** Consider closing **{label}** manually right now at `{current_price:.{dec}f}` to protect accumulated gains before a sharp retracement."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                elif trade_type == "SELL":
-                    if current_price <= tp:
-                        msg = (
-                            f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"✅ Price reached Take Profit at `{tp:.{dec}f}`!\n"
-                            f"💡 *Professional Reason:* Bearish expansion achieved target. Close **{label}** and lock in your wins."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                        active_trades.pop(label, None)
-                        continue
-                    elif current_price >= sl:
-                        msg = (
-                            f"🛑 **[STOP LOSS HIT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n"
-                            f"💡 *Professional Reason:* Bearish structure invalidated. Accept the controlled loss and wait for the next setup."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                        active_trades.pop(label, None)
-                        daily_stats["consecutive_losses"] += 1
-                        continue
-
-                    # Breakeven Check
-                    if not trade["be_hit"] and current_price <= be_level:
-                        trade["be_hit"] = True
-                        msg = (
-                            f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📉 Price has pushed in our favor to `{current_price:.{dec}f}`.\n"
-                            f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n"
-                            f"💡 *Professional Reason:* Secure a risk-free trade environment."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                    # Early Exit / Reversal Warning
-                    elif current_rsi < 22:
-                        msg = (
-                            f"⚠️ **[MENTOR GUIDANCE: EARLY EXIT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 **{label}** is showing oversold RSI exhaustion (`{current_rsi:.1f}`).\n"
-                            f"👉 **Action Required:** Consider closing **{label}** manually right now at `{current_price:.{dec}f}` to lock in profits before a bounce."
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                # --- BREAKEVEN TRIGGER (Aggressive & Professional) ---
+                if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
+                    trade["be_hit"] = True
+                    msg = (
+                        f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📈 Price has pushed cleanly in our favor to `{current_price:.{dec}f}`.\n"
+                        f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n\n"
+                        f"📢 **Ready-to-Send Channel Message:**\n"
+                        f"───────────────────\n"
+                        f"🔒 **VIP UPDATE: {label} to BREAKEVEN!**\n"
+                        f"Traders, our setup is running in deep profit. Per our professional risk protocols, kindly move your stop loss to entry right now. This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿.\n"
+                        f"───────────────────"
+                    )
+                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
             except Exception as e:
                 logging.error(f"Trade lifecycle mentor error for {label}: {e}")
@@ -502,7 +462,7 @@ async def heartbeat_loop(app):
             is_active, status_msg = check_circuit_breaker()
             status_icon = "🟢" if is_active else "🔴"
             
-            msg_text = f"{status_icon} *[Bot Heartbeat]* Kings™ Lifecycle Mentor Status: {status_msg} ({formatted_wat})"
+            msg_text = f"{status_icon} *[Bot Heartbeat]* Kings™ Profit Hunter Status: {status_msg} ({formatted_wat}) | We pray for blue 💙"
             msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
             sent_messages.append((msg.message_id, time.time()))
         except Exception as e:
@@ -545,7 +505,8 @@ async def signal_loop(app):
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n\n"
                         f"🛡️ **Breakeven Target:** `{be_level:.{dec}f}`\n\n"
-                        f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`"
+                        f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`\n\n"
+                        f"💙 *We pray for blue* 💙🙌🏿🙏🏿"
                     )
 
                     admin_preview_text = (
@@ -587,7 +548,6 @@ async def signal_loop(app):
         await asyncio.sleep(60)
 
 async def post_init(app):
-    """Starts background loops once Telegram app is initialized."""
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
     asyncio.create_task(trade_lifecycle_mentor_loop(app))
@@ -608,7 +568,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Active Trade Lifecycle Mentor & Signal Engine Active & Running...")
+    logging.info("Kings™ Profit Hunter & Lifecycle Mentor Active & Running 💙...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
