@@ -29,11 +29,11 @@ BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 # RISK & ACCOUNT SAFETY CONFIGURATION (Used for Lot/Risk sizing display)
 RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
 MAX_DAILY_LOSS_PCT = 0.05      # Max 5% total account loss per day
-MAX_CONSECUTIVE_LOSSES = 3      # Stop scanning after 3 straight losses
+MAX_CONSECUTIVE_LOSSES = 3     # Stop scanning after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",             # Gold Futures
+    "GC=F": "XAUUSD",              # Gold Futures
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -56,6 +56,7 @@ last_signals = {}
 authorized_users = set()
 sent_messages = []
 draft_signals = {}  # Stores clean public signal templates keyed by message_id
+active_trades = {}  # Tracks ongoing trades for lifecycle management: {label: {details}}
 
 daily_stats = {
     "date": datetime.date.today(),
@@ -72,7 +73,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Manual Signal Dispatcher & Analysis Engine is Live!"
+    return "Kings™ Active Trade Lifecycle Mentor & Signal Dispatcher is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -269,7 +270,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Manual Signal Engine active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Active Trade Lifecycle Mentor active.", parse_mode="Markdown")
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 **Engine Active.** Send `/status` for bot health.", parse_mode="Markdown")
     else:
@@ -287,7 +288,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 **KINGS™ ENGINE STATUS**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Circuit Breaker:** {status_msg}\n"
-        f"🎯 **Mode:** Manual Signal Dispatcher (Approval Required)\n"
+        f"🎯 **Active Trades Monitored:** {len(active_trades)}\n"
+        f"🛡️ **Mentor Mode:** Active Trade Lifecycle Guidance Enabled\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -314,10 +316,26 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg_id = query.message.message_id
 
     if data.startswith("approve_"):
-        public_signal_text = draft_signals.pop(msg_id, None)
-        if not public_signal_text:
+        ticker_key = data.replace("approve_", "")
+        signal_info = draft_signals.pop(msg_id, None)
+        
+        if not signal_info:
             await query.edit_message_text("⚠️ **Signal session expired or unavailable.**")
             return
+
+        public_signal_text = signal_info["text"]
+        
+        # Register into active trade lifecycle monitor
+        active_trades[ticker_key] = {
+            "label": ticker_key,
+            "type": signal_info["type"],
+            "entry": signal_info["entry"],
+            "sl": signal_info["sl"],
+            "tp": signal_info["tp"],
+            "be_level": signal_info["be_level"],
+            "be_hit": False,
+            "time_opened": time.time()
+        }
 
         try:
             posted_msg = await context.bot.send_message(
@@ -328,7 +346,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             sent_messages.append((posted_msg.message_id, time.time()))
             original_text = query.message.text
             await query.edit_message_text(
-                text=f"✅ **[POSTED TO KINGS™ CHANNEL]**\n\n{original_text}",
+                text=f"✅ **[APPROVED & POSTED TO CHANNEL]**\n🛡️ *Lifecycle Mentor now tracking {ticker_key}*\n\n{original_text}",
                 reply_markup=None,
                 parse_mode="Markdown"
             )
@@ -337,13 +355,143 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text(f"⚠️ **BROADCAST FAILED!** Error: `{e}`", parse_mode="Markdown")
 
     elif data.startswith("reject_"):
+        ticker_key = data.replace("reject_", "")
         draft_signals.pop(msg_id, None)
         original_text = query.message.text
         await query.edit_message_text(
-            text=f"❌ **[SIGNAL DISCARDED FROM CHANNEL]**\n\n{original_text}",
+            text=f"❌ **[SIGNAL DISCARDED FOR {ticker_key}]**\n\n{original_text}",
             reply_markup=None,
             parse_mode="Markdown"
         )
+
+# --- ACTIVE TRADE LIFECYCLE MENTOR LOOP ---
+async def trade_lifecycle_mentor_loop(app):
+    """Continuously monitors approved trades and guides the user step-by-step."""
+    global active_trades
+    while True:
+        await asyncio.sleep(60) # check every minute
+        if not active_trades:
+            continue
+
+        target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+
+        for label, trade in list(active_trades.items()):
+            try:
+                # Find corresponding yfinance ticker
+                y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), None)
+                if not y_ticker and label == "BTC-USD":
+                    y_ticker = "BTC-USD"
+                
+                if not y_ticker:
+                    continue
+
+                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
+                if df_live is None or df_live.empty:
+                    continue
+
+                current_price = float(df_live['Close'].iloc[-1])
+                current_rsi = float(df_live['rsi14'].iloc[-1]) if 'rsi14' in df_live else 50.0
+                trade_type = trade["type"]
+                entry = trade["entry"]
+                sl = trade["sl"]
+                tp = trade["tp"]
+                be_level = trade["be_level"]
+
+                dec = 3 if "JPY" in y_ticker else (2 if y_ticker in ["BTC-USD", "GC=F"] else 4)
+
+                # Check if TP or SL hit
+                if trade_type == "BUY":
+                    if current_price >= tp:
+                        msg = (
+                            f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"✅ Price reached Take Profit at `{tp:.{dec}f}`!\n"
+                            f"💡 *Professional Reason:* Bullish momentum successfully realized full target expansion. Close the trade and secure profits."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        continue
+                    elif current_price <= sl:
+                        msg = (
+                            f"🛑 **[STOP LOSS HIT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n"
+                            f"💡 *Professional Reason:* Market invalidated the structure. Accept the controlled risk loss, keeping your capital safe per risk rules."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        daily_stats["consecutive_losses"] += 1
+                        continue
+
+                    # Breakeven Check
+                    if not trade["be_hit"] and current_price >= be_level:
+                        trade["be_hit"] = True
+                        msg = (
+                            f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📈 Price has pushed cleanly in our favor to `{current_price:.{dec}f}`.\n"
+                            f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n"
+                            f"💡 *Professional Reason:* Lock in zero-risk status. All risk is now removed from the table."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+
+                    # Early Exit / Reversal Warning
+                    elif current_rsi > 78:
+                        msg = (
+                            f"⚠️ **[MENTOR GUIDANCE: EARLY EXIT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📊 **{label}** is showing overbought RSI exhaustion (`{current_rsi:.1f}`).\n"
+                            f"👉 **Action Required:** Consider closing **{label}** manually right now at `{current_price:.{dec}f}` to protect accumulated gains before a sharp retracement."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+
+                elif trade_type == "SELL":
+                    if current_price <= tp:
+                        msg = (
+                            f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"✅ Price reached Take Profit at `{tp:.{dec}f}`!\n"
+                            f"💡 *Professional Reason:* Bearish expansion achieved target. Close **{label}** and lock in your wins."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        continue
+                    elif current_price >= sl:
+                        msg = (
+                            f"🛑 **[STOP LOSS HIT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n"
+                            f"💡 *Professional Reason:* Bearish structure invalidated. Accept the controlled loss and wait for the next setup."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        daily_stats["consecutive_losses"] += 1
+                        continue
+
+                    # Breakeven Check
+                    if not trade["be_hit"] and current_price <= be_level:
+                        trade["be_hit"] = True
+                        msg = (
+                            f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📉 Price has pushed in our favor to `{current_price:.{dec}f}`.\n"
+                            f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n"
+                            f"💡 *Professional Reason:* Secure a risk-free trade environment."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+
+                    # Early Exit / Reversal Warning
+                    elif current_rsi < 22:
+                        msg = (
+                            f"⚠️ **[MENTOR GUIDANCE: EARLY EXIT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📊 **{label}** is showing oversold RSI exhaustion (`{current_rsi:.1f}`).\n"
+                            f"👉 **Action Required:** Consider closing **{label}** manually right now at `{current_price:.{dec}f}` to lock in profits before a bounce."
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+
+            except Exception as e:
+                logging.error(f"Trade lifecycle mentor error for {label}: {e}")
 
 # --- HEARTBEAT & SCANNER LOOPS ---
 async def heartbeat_loop(app):
@@ -354,7 +502,7 @@ async def heartbeat_loop(app):
             is_active, status_msg = check_circuit_breaker()
             status_icon = "🟢" if is_active else "🔴"
             
-            msg_text = f"{status_icon} *[Bot Heartbeat]* Kings™ Engine Status: {status_msg} ({formatted_wat})"
+            msg_text = f"{status_icon} *[Bot Heartbeat]* Kings™ Lifecycle Mentor Status: {status_msg} ({formatted_wat})"
             msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
             sent_messages.append((msg.message_id, time.time()))
         except Exception as e:
@@ -396,16 +544,16 @@ async def signal_loop(app):
                         f"🔹 **Entry:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n\n"
-                        f"🛡️ **Breakeven Level:** `{be_level:.{dec}f}`\n\n"
+                        f"🛡️ **Breakeven Target:** `{be_level:.{dec}f}`\n\n"
                         f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`"
                     )
 
                     admin_preview_text = (
-                        f"📋 **NEW MANUAL SIGNAL ALERT**\n"
+                        f"📋 **NEW PROFESSIONAL SIGNAL ALERT ({label})**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n\n"
                         f"{public_channel_text}\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Tap 🚀 to post signal to channel or ❌ to discard."
+                        f"Tap 🚀 to post **{label}** to channel & start active mentor tracking, or ❌ to discard."
                     )
 
                     keyboard = [
@@ -424,7 +572,14 @@ async def signal_loop(app):
                         parse_mode="Markdown"
                     )
 
-                    draft_signals[sent_draft.message_id] = public_channel_text
+                    draft_signals[sent_draft.message_id] = {
+                        "text": public_channel_text,
+                        "type": sig,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp,
+                        "be_level": be_level
+                    }
 
         except Exception as e:
             logging.error(f"Signal Loop error: {e}")
@@ -435,6 +590,7 @@ async def post_init(app):
     """Starts background loops once Telegram app is initialized."""
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
+    asyncio.create_task(trade_lifecycle_mentor_loop(app))
 
 # --- MAIN ENTRY POINT ---
 def main():
@@ -452,7 +608,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Manual Signal Engine Active & Running...")
+    logging.info("Kings™ Active Trade Lifecycle Mentor & Signal Engine Active & Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
