@@ -4,3 +4,4 @@ ta
 pandas
 aiohttp
 Flask
+deriv-api
