@@ -1,7 +1,6 @@
+python-telegram-bot==21.1.1
 yfinance
-pandas
 ta
+pandas
 aiohttp
-python-telegram-bot==20.7
-flask
-httpx
+Flask
