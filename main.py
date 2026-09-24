@@ -29,7 +29,6 @@ except ImportError:
     logging.warning("MetaTrader5 package not installed or non-Windows system. MT5 execution disabled.")
 
 # --- CONFIGURATION ---
-# Updated with active BotFather Token fallback
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYj9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal Chat ID
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
@@ -49,9 +48,8 @@ MAX_DAILY_LOSS_PCT = 0.05       # Max 5% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
-# Updated XAUUSD ticker for yfinance compatibility
 WEEKDAY_ASSETS = {
-    "XAUUSD=X": "XAUUSD",       # Fixed spot Gold ticker for yfinance
+    "GC=F": "XAUUSD",            # Gold Futures (Highly reliable yfinance ticker for Gold)
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -164,7 +162,7 @@ def calculate_dynamic_lot(ticker, sl_pips):
     pip_value = 10.0  # Standard lot USD per pip on majors
     if "JPY" in ticker:
         pip_value = 6.5
-    elif ticker in ["XAUUSD=X", "BTC-USD"]:
+    elif ticker in ["GC=F", "XAUUSD=X", "BTC-USD"]:
         pip_value = 1.0
 
     if sl_pips <= 0:
@@ -204,22 +202,47 @@ def is_in_session_killzone(ticker):
 
     return (london_start <= now_utc <= london_end) or (ny_start <= now_utc <= ny_end)
 
-# --- MARKET DATA FETCHING ---
+# --- MARKET DATA FETCHING (FIXED FOR ISSUE #2) ---
 def fetch_data(ticker, interval, period="7d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
-        if df is None or df.empty or len(df) < 50:
+        
+        if df is None or df.empty:
+            logging.warning(f"No data returned for {ticker} ({interval})")
             return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
 
-        df['atr14'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
-        df['ema50'] = ta.trend.ema_indicator(df['Close'], window=50)
-        df['ema200'] = ta.trend.ema_indicator(df['Close'], window=200)
-        df['rsi14'] = ta.momentum.rsi(df['Close'], window=14)
+        # Flatten MultiIndex columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+
+        # Standardize column headers to single level strings
+        df.columns = [str(col).capitalize() for col in df.columns]
+
+        # Verify essential OHLC columns exist
+        required_cols = ['High', 'Low', 'Close']
+        if not all(col in df.columns for col in required_cols):
+            logging.error(f"Missing required price columns for {ticker} ({interval})")
+            return None
+
+        # Ensure numeric Series
+        high_series = pd.to_numeric(df['High'].squeeze(), errors='coerce')
+        low_series = pd.to_numeric(df['Low'].squeeze(), errors='coerce')
+        close_series = pd.to_numeric(df['Close'].squeeze(), errors='coerce')
+
+        if len(close_series.dropna()) < 30:
+            logging.warning(f"Insufficient data points for {ticker} ({interval})")
+            return None
+
+        # Calculate indicators safely
+        df['atr14'] = ta.volatility.average_true_range(high_series, low_series, close_series, window=14)
+        df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
+        df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
+        df['rsi14'] = ta.momentum.rsi(close_series, window=14)
+
         return df
+
     except Exception as e:
-        logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
+        logging.error(f"Error fetching/processing data for {ticker} ({interval}): {e}")
         return None
 
 def get_h1_trend_bias(ticker):
@@ -228,7 +251,7 @@ def get_h1_trend_bias(ticker):
         return "NEUTRAL"
     
     latest_close = float(df_h1['Close'].iloc[-1])
-    latest_ema200 = float(df_h1['ema200'].iloc[-1]) if 'ema200' in df_h1 else latest_close
+    latest_ema200 = float(df_h1['ema200'].iloc[-1]) if 'ema200' in df_h1 and pd.notna(df_h1['ema200'].iloc[-1]) else latest_close
 
     if latest_close > latest_ema200:
         return "BULLISH"
@@ -248,17 +271,21 @@ def get_multi_strategy_signal(ticker):
 
     c = df_m15.iloc[-2]
     prev_c = df_m15.iloc[-3]
+    
+    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']) or pd.isna(c['ema200']):
+        return None, None, None, None, None, None
+
     atr = float(c['atr14'])
     close_p = float(c['Close'])
     rsi = float(c['rsi14'])
     ema50 = float(c['ema50'])
     ema200 = float(c['ema200'])
 
-    recent_high = df_m15['High'].iloc[-15:-3].max()
-    recent_low = df_m15['Low'].iloc[-15:-3].min()
+    recent_high = float(df_m15['High'].iloc[-15:-3].max())
+    recent_low = float(df_m15['Low'].iloc[-15:-3].min())
 
-    apa_buy = close_p > recent_high and prev_c['Close'] <= recent_high
-    apa_sell = close_p < recent_low and prev_c['Close'] >= recent_low
+    apa_buy = close_p > recent_high and float(prev_c['Close']) <= recent_high
+    apa_sell = close_p < recent_low and float(prev_c['Close']) >= recent_low
 
     ema_buy = ema50 > ema200 and close_p > ema50
     ema_sell = ema50 < ema200 and close_p < ema50
@@ -405,7 +432,7 @@ async def signal_loop(app):
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
-                    dec = 3 if ticker == "JPY=X" else (2 if ticker in ["BTC-USD", "XAUUSD=X"] else 4)
+                    dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F", "XAUUSD=X"] else 4)
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                     expires_wat = now_wat + datetime.timedelta(minutes=15)
