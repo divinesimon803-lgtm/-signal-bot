@@ -487,12 +487,17 @@ async def signal_loop(app):
 
         await asyncio.sleep(60)
 
+async def post_init(app):
+    """Starts background loops once Telegram app initialized."""
+    asyncio.create_task(signal_loop(app))
+    asyncio.create_task(heartbeat_loop(app))
+
 # --- MAIN ENTRY POINT ---
-async def main():
+def main():
     init_mt5_connection()
 
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", handle_text_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
@@ -500,16 +505,8 @@ async def main():
 
     Thread(target=run_flask, daemon=True).start()
 
-    asyncio.create_task(signal_loop(app))
-    asyncio.create_task(heartbeat_loop(app))
-
     logging.info("Kings™ Multi-Strategy Auto Engine Active & Running...")
-
-    async with app:
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        while True:
-            await asyncio.sleep(3600)
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
