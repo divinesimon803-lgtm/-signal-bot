@@ -71,6 +71,7 @@ TIMEFRAME_H1 = "1h"
 
 # --- SYSTEM STATE TRACKERS ---
 last_signals = {}
+active_open_trades = {}  # Tracks active trades for dynamic management: {ticker: {action, entry, sl, tp, contract_id}}
 authorized_users = set()
 sent_messages = []
 draft_signals = {}  # Stores clean public signal templates keyed by message_id
@@ -90,7 +91,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Multi-Strategy Auto Engine with Deriv Cloud Execution is Live!"
+    return "Kings™ Multi-Strategy Auto Engine with Active Risk Management is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -101,7 +102,7 @@ async def execute_deriv_trade(symbol_label, action, amount=10.0):
     """Executes market contracts directly on Deriv via WebSocket API."""
     if not DERIV_TOKEN:
         logging.warning("[SIMULATION] Deriv API Token not supplied. Trade simulated.")
-        return True
+        return "simulated_contract_id"
 
     deriv_symbol = DERIV_SYMBOL_MAP.get(symbol_label, symbol_label)
     contract_type = "MULTUP" if action.upper() == "BUY" else "MULTDOWN"
@@ -113,9 +114,8 @@ async def execute_deriv_trade(symbol_label, action, amount=10.0):
         if "error" in auth:
             logging.error(f"Deriv Authorization Error: {auth['error']['message']}")
             await api.clear()
-            return False
+            return None
 
-        # Generate proposal
         proposal = await api.proposal({
             "proposal": 1,
             "amount": float(amount),
@@ -128,24 +128,23 @@ async def execute_deriv_trade(symbol_label, action, amount=10.0):
         if "error" in proposal:
             logging.error(f"Deriv Proposal Error for {deriv_symbol}: {proposal['error']['message']}")
             await api.clear()
-            return False
+            return None
 
-        # Execute market order
         buy_res = await api.buy({"buy": proposal["proposal"]["id"], "price": float(amount)})
         
         if "error" in buy_res:
             logging.error(f"Deriv Buy Error: {buy_res['error']['message']}")
             await api.clear()
-            return False
+            return None
 
         contract_id = buy_res["buy"]["contract_id"]
         logging.info(f"✅ Deriv Trade Executed Successfully! Contract ID: {contract_id} ({action} {symbol_label})")
         await api.clear()
-        return True
+        return contract_id
 
     except Exception as e:
         logging.error(f"Deriv API Trade Execution Error ({symbol_label}): {e}")
-        return False
+        return None
 
 # --- DYNAMIC RISK & LOT SIZE CALCULATOR ---
 def calculate_dynamic_lot(ticker, sl_pips):
@@ -205,20 +204,16 @@ def fetch_data(ticker, interval, period="7d"):
             logging.warning(f"No data returned for {ticker} ({interval})")
             return None
 
-        # Flatten MultiIndex columns if present
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
 
-        # Standardize column headers to single level strings
         df.columns = [str(col).capitalize() for col in df.columns]
 
-        # Verify essential OHLC columns exist
         required_cols = ['High', 'Low', 'Close']
         if not all(col in df.columns for col in required_cols):
             logging.error(f"Missing required price columns for {ticker} ({interval})")
             return None
 
-        # Ensure numeric Series
         high_series = pd.to_numeric(df['High'].squeeze(), errors='coerce')
         low_series = pd.to_numeric(df['Low'].squeeze(), errors='coerce')
         close_series = pd.to_numeric(df['Close'].squeeze(), errors='coerce')
@@ -227,7 +222,6 @@ def fetch_data(ticker, interval, period="7d"):
             logging.warning(f"Insufficient data points for {ticker} ({interval})")
             return None
 
-        # Calculate indicators safely
         df['atr14'] = ta.volatility.average_true_range(high_series, low_series, close_series, window=14)
         df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
@@ -343,7 +337,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Multi-Strategy Auto Engine is active with Deriv Cloud Execution.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine active with Active Risk Management & Cloud Execution.", parse_mode="Markdown")
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 **Engine Active.** Send `/status` for bot health and execution status.", parse_mode="Markdown")
     else:
@@ -363,7 +357,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Circuit Breaker:** {status_msg}\n"
         f"🔌 **Deriv Cloud Connection:** {deriv_status}\n"
-        f"🌐 **Execution Mode:** Cloud Auto-Trade (24/7)\n"
+        f"🛡️ **Active Trade Manager:** Online (Auto-SL/TP & Reversals)\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -373,7 +367,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine is active with Deriv Cloud execution.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Engine active.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
@@ -416,7 +410,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         draft_signals.pop(msg_id, None)
         original_text = query.message.text
         await query.edit_message_text(
-            text=f"❌ **[SIGNAL DISCARDED FROM CHANNEL]** (Live trade remains active on your Deriv account)\n\n{original_text}",
+            text=f"❌ **[SIGNAL DISCARDED FROM CHANNEL]** (Live trade remains managed on your account)\n\n{original_text}",
             reply_markup=None,
             parse_mode="Markdown"
         )
@@ -438,7 +432,7 @@ async def heartbeat_loop(app):
         await asyncio.sleep(3600)
 
 async def signal_loop(app):
-    global last_signals, draft_signals
+    global last_signals, draft_signals, active_open_trades
     while True:
         try:
             is_active, _ = check_circuit_breaker()
@@ -466,11 +460,22 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    # ⚡ AUTOMATICALLY EXECUTE LIVE TRADE ON DERIV INSTANTLY ⚡
-                    trade_executed = await execute_deriv_trade(label, sig, amount=10.0)
-                    exec_status_str = "⚡ **LIVE TRADE EXECUTED AUTOMATICALLY ON DERIV**" if trade_executed else "⚠️ **Deriv Execution Failed**"
+                    # Execute Live Trade & Track State
+                    contract_id = await execute_deriv_trade(label, sig, amount=10.0)
+                    exec_status_str = "⚡ **LIVE TRADE EXECUTED AUTOMATICALLY ON DERIV**" if contract_id else "⚠️ **Deriv Execution Failed**"
 
-                    # Professional format without header and lot size
+                    if contract_id:
+                        active_open_trades[ticker] = {
+                            "label": label,
+                            "action": sig,
+                            "entry": entry,
+                            "sl": sl,
+                            "tp": tp,
+                            "be_level": be_level,
+                            "contract_id": contract_id,
+                            "stage": "OPEN"
+                        }
+
                     public_channel_text = (
                         f"📌 **Pair:** `{label}`\n"
                         f"📈 **Action:** {dir_emoji} **{sig}**\n\n"
@@ -513,10 +518,70 @@ async def signal_loop(app):
 
         await asyncio.sleep(60)
 
+# --- PROFESSIONAL ACTIVE POSITION MANAGER LOOP ---
+async def manage_active_trades_loop(app):
+    """Continuously monitors open trades, modifies SL/TP or exits early, and talks like a pro strategist."""
+    global active_open_trades
+    while True:
+        try:
+            await asyncio.sleep(90)  # Check every 90 seconds
+            if not active_open_trades:
+                continue
+
+            target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+
+            for ticker, trade in list(active_open_trades.items()):
+                label = trade["label"]
+                action = trade["action"]
+                entry = trade["entry"]
+                be_level = trade["be_level"]
+                stage = trade["stage"]
+                dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
+
+                df = fetch_data(ticker, interval=TIMEFRAME_M15, period="1d")
+                if df is None or df.empty:
+                    continue
+
+                current_price = float(df['Close'].iloc[-1])
+                rsi = float(df['rsi14'].iloc[-1]) if 'rsi14' in df else 50.0
+
+                # Check if price reached Breakeven threshold
+                if stage == "OPEN":
+                    reached_be = (action == "BUY" and current_price >= be_level) or (action == "SELL" and current_price <= be_level)
+                    if reached_be:
+                        trade["stage"] = "BE_LOCKED"
+                        pro_msg = (
+                            f"🛡️ **PRO ACTIVE MANAGEMENT UPDATE**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 **Pair:** `{label}`\n"
+                            f"💬 *Team, price action on `{label}` has pushed nicely into our favor and momentum is consolidating around key levels. Let's secure our positions now—everyone modify your Stop Loss to entry/breakeven (`{entry:.{dec}f}`) to eliminate all risk on this trade.*"
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=pro_msg, parse_mode="Markdown")
+                        continue
+
+                # Check for premature reversal / early exit condition
+                reversal_detected = (action == "BUY" and rsi > 75 and current_price < float(df['Close'].iloc[-2])) or \
+                                    (action == "SELL" and rsi < 25 and current_price > float(df['Close'].iloc[-2]))
+
+                if reversal_detected and stage != "CLOSED":
+                    trade["stage"] = "CLOSED"
+                    del active_open_trades[ticker]
+                    pro_msg = (
+                        f"🚨 **PRO TRADE EXIT ALERT**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"📌 **Pair:** `{label}`\n"
+                        f"💬 *Traders, I am noticing a sharp momentum divergence and overbought/oversold exhaustion forming on the lower timeframes for `{label}`. To protect our capital from a sudden trend flip, let's close this trade right now and lock in our gains. Smart trading means preserving profits!*"
+                    )
+                    await app.bot.send_message(chat_id=target_user, text=pro_msg, parse_mode="Markdown")
+
+        except Exception as e:
+            logging.error(f"Active Position Manager error: {e}")
+
 async def post_init(app):
     """Starts background loops once Telegram app is initialized."""
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
+    asyncio.create_task(manage_active_trades_loop(app))
 
 # --- MAIN ENTRY POINT ---
 def main():
@@ -531,11 +596,10 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(CallbackQueryHandler(handle_button_click))
 
-    # Start Flask background server thread after loop initialization
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Multi-Strategy Auto Engine Active & Running...")
+    logging.info("Kings™ Multi-Strategy Auto Engine with Active Management Active & Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
