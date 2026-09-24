@@ -30,7 +30,7 @@ BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 RISK_PER_TRADE_PCT = 0.01      # Risk 1% of account balance per trade
 MAX_DAILY_LOSS_PCT = 0.05      # Max 5% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 3     # Stop scanning after 3 straight losses
-MAX_DAILY_WINS = 3             # Daily Target Lock: Pause after 3 wins (Adjustable to 3 or 4)
+MAX_DAILY_WINS = 3             # Daily Target Lock: Pause after 3 wins
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
@@ -229,11 +229,11 @@ def get_multi_strategy_signal(ticker):
     if sig == "BUY":
         sl = close_p - risk_distance
         tp = close_p + (risk_distance * tp_multiplier)
-        be_level = close_p + (risk_distance * 0.3)  # Trigger aggressive breakeven early at 30% progress
+        be_level = close_p + (risk_distance * 0.5)  # Structural midpoint (50% progress) to prevent premature micro-stopouts
     else:
         sl = close_p + risk_distance
         tp = close_p - (risk_distance * tp_multiplier)
-        be_level = close_p - (risk_distance * 0.3)
+        be_level = close_p - (risk_distance * 0.5)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_pips)
     return sig, close_p, sl, tp, be_level, rec_lot
@@ -434,18 +434,18 @@ async def trade_lifecycle_mentor_loop(app):
                     daily_stats["consecutive_losses"] += 1
                     continue
 
-                # --- BREAKEVEN TRIGGER (Aggressive & Professional) ---
+                # --- BREAKEVEN TRIGGER (Structural Midpoint Protection) ---
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
                     msg = (
                         f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📈 Price has pushed cleanly in our favor to `{current_price:.{dec}f}`.\n"
+                        f"📈 Price has reached the structural midpoint at `{current_price:.{dec}f}`.\n"
                         f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n\n"
                         f"📢 **Ready-to-Send Channel Message:**\n"
                         f"───────────────────\n"
                         f"🔒 **VIP UPDATE: {label} to BREAKEVEN!**\n"
-                        f"Traders, our setup is running in deep profit. Per our professional risk protocols, kindly move your stop loss to entry right now. This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿.\n"
+                        f"Traders, our setup has cleared its structural midpoint with solid momentum. Per our professional risk protocols, kindly move your stop loss to entry right now. This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿.\n"
                         f"───────────────────"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
