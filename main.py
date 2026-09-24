@@ -29,7 +29,7 @@ except ImportError:
     logging.warning("MetaTrader5 package not installed or non-Windows system. MT5 execution disabled.")
 
 # --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYj9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8941725257:AAENp4SI6XmOcfyYReK75IC7e9YVfywdiho")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal Chat ID
 CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
@@ -49,7 +49,7 @@ MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",            # Gold Futures (Highly reliable yfinance ticker for Gold)
+    "GC=F": "XAUUSD",            # Gold Futures (Correct Yahoo Finance Ticker)
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -162,7 +162,7 @@ def calculate_dynamic_lot(ticker, sl_pips):
     pip_value = 10.0  # Standard lot USD per pip on majors
     if "JPY" in ticker:
         pip_value = 6.5
-    elif ticker in ["GC=F", "XAUUSD=X", "BTC-USD"]:
+    elif ticker in ["GC=F", "BTC-USD"]:
         pip_value = 1.0
 
     if sl_pips <= 0:
@@ -202,7 +202,7 @@ def is_in_session_killzone(ticker):
 
     return (london_start <= now_utc <= london_end) or (ny_start <= now_utc <= ny_end)
 
-# --- MARKET DATA FETCHING (FIXED FOR ISSUE #2) ---
+# --- MARKET DATA FETCHING ---
 def fetch_data(ticker, interval, period="7d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
@@ -432,7 +432,7 @@ async def signal_loop(app):
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
-                    dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F", "XAUUSD=X"] else 4)
+                    dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                     expires_wat = now_wat + datetime.timedelta(minutes=15)
