@@ -49,7 +49,7 @@ MAX_CONSECUTIVE_LOSSES = 3      # Stop trading after 3 straight losses
 
 # STRICT ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",            # Gold Futures (Correct Yahoo Finance Ticker)
+    "GC=F": "XAUUSD",             # Gold Futures (Correct Yahoo Finance Ticker)
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
@@ -92,7 +92,7 @@ def home():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # --- MT5 AUTOMATED EXECUTION ENGINE ---
 def init_mt5_connection():
@@ -496,6 +496,10 @@ async def post_init(app):
 def main():
     init_mt5_connection()
 
+    # Create and set explicit asyncio event loop (Fixes Python 3.14 RuntimeError)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).build()
 
@@ -503,10 +507,12 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(CallbackQueryHandler(handle_button_click))
 
-    Thread(target=run_flask, daemon=True).start()
+    # Start Flask background server thread after loop initialization
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
 
     logging.info("Kings™ Multi-Strategy Auto Engine Active & Running...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
     main()
