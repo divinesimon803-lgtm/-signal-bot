@@ -324,23 +324,8 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
         ticker_key = data.replace("approve_", "")
         signal_info = draft_signals.pop(msg_id, None)
         
-        if not signal_info:
-            await query.edit_message_text("⚠️ **Signal session expired or unavailable.**")
-            return
-
-        public_signal_text = signal_info["text"]
+        public_signal_text = signal_info["text"] if signal_info else f"📌 **Pair:** `{ticker_key}`\n📈 **Action Approved & Posted**"
         
-        active_trades[ticker_key] = {
-            "label": ticker_key,
-            "type": signal_info["type"],
-            "entry": signal_info["entry"],
-            "sl": signal_info["sl"],
-            "tp": signal_info["tp"],
-            "be_level": signal_info["be_level"],
-            "be_hit": False,
-            "time_opened": time.time()
-        }
-
         try:
             posted_msg = await context.bot.send_message(
                 chat_id=CHANNEL_CHAT_ID,
@@ -350,7 +335,7 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             sent_messages.append((posted_msg.message_id, time.time()))
             original_text = query.message.text
             await query.edit_message_text(
-                text=f"✅ **[APPROVED & POSTED TO CHANNEL]**\n🛡️ *Lifecycle Mentor tracking {ticker_key}*\n\n{original_text}",
+                text=f"✅ **[APPROVED & POSTED TO PUBLIC CHANNEL]**\n\n{original_text}",
                 reply_markup=None,
                 parse_mode="Markdown"
             )
@@ -470,12 +455,17 @@ async def heartbeat_loop(app):
         await asyncio.sleep(3600)
 
 async def signal_loop(app):
-    global last_signals, draft_signals
+    global last_signals, draft_signals, active_trades
     while True:
         try:
             is_active, _ = check_circuit_breaker()
             if not is_active:
                 await asyncio.sleep(300)
+                continue
+
+            # Cap active signals at a maximum of 3 concurrent trades to prevent confusion
+            if len(active_trades) >= 3:
+                await asyncio.sleep(60)
                 continue
 
             if await check_news_blackout():
@@ -486,6 +476,12 @@ async def signal_loop(app):
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
+                if len(active_trades) >= 3:
+                    break
+
+                if label in active_trades:
+                    continue  # Don't duplicate signals for already active trades
+
                 sig, entry, sl, tp, be_level, rec_lot = get_multi_strategy_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
@@ -510,16 +506,17 @@ async def signal_loop(app):
                     )
 
                     admin_preview_text = (
-                        f"📋 **NEW PROFESSIONAL SIGNAL ALERT ({label})**\n"
+                        f"📋 **NEW MENTOR SIGNAL ALERT ({label})**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n\n"
                         f"{public_channel_text}\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Tap 🚀 to post **{label}** to channel & start active mentor tracking, or ❌ to discard."
+                        f"🛡️ **Active Mentor Tracking Started Automatically!**\n"
+                        f"Tap 🚀 below *only* if you also want to broadcast this to the public channel."
                     )
 
                     keyboard = [
                         [
-                            InlineKeyboardButton("🚀 Approve & Post", callback_data=f"approve_{label}"),
+                            InlineKeyboardButton("🚀 Approve & Post to Channel", callback_data=f"approve_{label}"),
                             InlineKeyboardButton("❌ Reject", callback_data=f"reject_{label}")
                         ]
                     ]
@@ -540,6 +537,18 @@ async def signal_loop(app):
                         "sl": sl,
                         "tp": tp,
                         "be_level": be_level
+                    }
+
+                    # Automatically register trade for private mentoring immediately!
+                    active_trades[label] = {
+                        "label": label,
+                        "type": sig,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp,
+                        "be_level": be_level,
+                        "be_hit": False,
+                        "time_opened": time.time()
                     }
 
         except Exception as e:
