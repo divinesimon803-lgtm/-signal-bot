@@ -288,11 +288,10 @@ def check_circuit_breaker():
 
     return True, "System Operational (Active Mode)"
 
-# --- MASTER COMPREHENSIVE FOREX MENTOR BRAIN (KNOWS EVERYTHING ABOUT TRADING) ---
+# --- MASTER COMPREHENSIVE FOREX MENTOR BRAIN ---
 def get_forex_mentor_response(query):
     q = query.lower()
     
-    # 1. Strategy & Institutional Concepts (SMC / Price Action)
     if any(keyword in q for keyword in ["strategy", "how", "trade", "system", "setup", "edge"]):
         return (
             "🧠 **Master Mentor: Institutional Strategy Blueprint**\n"
@@ -303,7 +302,6 @@ def get_forex_mentor_response(query):
             "3️⃣ **Execution & Reward:** On the 15-minute timeframe, we target structured breakouts with a minimum **3.5R Reward-to-Risk ratio**, meaning every winner covers more than 3 losses."
         )
         
-    # 2. Order Blocks, FVG & Market Structure
     elif any(keyword in q for keyword in ["order block", "ob", "fvg", "fair value gap", "structure", "bos", "choch", "liquidity"]):
         return (
             "🏛️ **Institutional Price Action & SMC Masterclass**\n"
@@ -313,7 +311,6 @@ def get_forex_mentor_response(query):
             "• **Market Structure Shift (MSS):** When price breaks previous swing highs or lows violently, confirming that smart money has shifted the trend direction."
         )
 
-    # 3. Risk Management & Lot Sizing
     elif any(keyword in q for keyword in ["risk", "lot", "money", "capital", "manage", "drawdown", "account"]):
         return (
             "🛡️ **Institutional Risk Management Rules**\n"
@@ -324,7 +321,6 @@ def get_forex_mentor_response(query):
             "• **Circuit Breakers:** Our system automatically locks trading after 4 consecutive losses or 6 daily wins to preserve your capital from emotional over-trading."
         )
 
-    # 4. Gold (XAUUSD) Specific Wisdom
     elif any(keyword in q for keyword in ["gold", "xauusd", "gc=f"]):
         return (
             "🥇 **XAUUSD (Gold) Mastery Guide**\n"
@@ -334,7 +330,6 @@ def get_forex_mentor_response(query):
             "• Always allocate slightly wider Average True Range (ATR) buffers for Gold's stop losses so algorithmic wicks don't clip your position prematurely."
         )
 
-    # 5. Psychology, Losing Streaks & Emotions
     elif any(keyword in q for keyword in ["loss", "lose", "streak", "psychology", "fear", "greed", "mindset", "patient"]):
         return (
             "🧘 **Trader Psychology & Mental Toughness**\n"
@@ -343,7 +338,6 @@ def get_forex_mentor_response(query):
             "Never revenge-trade. If a signal hits stop loss, accept it cleanly, review the system journal (`trade_mentor_journal.csv`), and wait for the next high-confluence setup."
         )
 
-    # 6. Session Times & Killzones
     elif any(keyword in q for keyword in ["time", "session", "killzone", "london", "new york", "asia", "when"]):
         return (
             "⏰ **Forex Session Killzones**\n"
@@ -354,7 +348,6 @@ def get_forex_mentor_response(query):
             "• Avoid trading during low-liquidity Asian consolidation hours or major bank holiday news blackouts."
         )
 
-    # 7. General Greetings / Help
     elif any(keyword in q for keyword in ["hello", "hi", "hey", "mentor", "start", "help"]):
         return (
             "👋 **Hello Boss! Your Master Forex Mentor is Online.**\n"
@@ -363,7 +356,6 @@ def get_forex_mentor_response(query):
             "Ask me anything: *'What is an order block?'*, *'How do I manage risk?'*, *'Explain market structure'*, or check `/status` for system health."
         )
 
-    # 8. Catch-all Intelligent Forex Synthesis for Any Other Custom Question
     else:
         return (
             "💡 **Institutional Mentor Analysis**\n"
