@@ -49,6 +49,7 @@ WEEKEND_ASSETS = {
 
 TIMEFRAME_M15 = "15m"
 TIMEFRAME_H1 = "1h"
+TIMEFRAME_H4 = "4h"
 
 # --- SYSTEM STATE TRACKERS ---
 last_signals = {}
@@ -145,7 +146,7 @@ def is_in_session_killzone(ticker):
     return session_start <= now_utc <= session_end
 
 # --- MARKET DATA FETCHING ---
-def fetch_data(ticker, interval, period="7d"):
+def fetch_data(ticker, interval, period="60d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
         
@@ -179,13 +180,14 @@ def fetch_data(ticker, interval, period="7d"):
         logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
         return None
 
-def get_h1_trend_bias(ticker):
-    df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="14d")
-    if df_h1 is None or len(df_h1) < 20:
+def get_h4_trend_bias(ticker):
+    """Higher-Timeframe Filter: Enforces alignment with the 4-Hour 200 EMA structure."""
+    df_h4 = fetch_data(ticker, interval=TIMEFRAME_H4, period="60d")
+    if df_h4 is None or len(df_h4) < 30:
         return "NEUTRAL"
     
-    latest_close = float(df_h1['Close'].iloc[-1])
-    latest_ema200 = float(df_h1['ema200'].iloc[-1]) if 'ema200' in df_h1 and pd.notna(df_h1['ema200'].iloc[-1]) else latest_close
+    latest_close = float(df_h4['Close'].iloc[-1])
+    latest_ema200 = float(df_h4['ema200'].iloc[-1]) if 'ema200' in df_h4 and pd.notna(df_h4['ema200'].iloc[-1]) else latest_close
 
     if latest_close > latest_ema200:
         return "BULLISH"
@@ -193,12 +195,14 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-STRATEGY CONFLUENCE ENGINE ---
+# --- MULTI-STRATEGY CONFLUENCE ENGINE WITH H4 FILTER ---
 def get_multi_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
         return None, None, None, None, None, None, None, None, None, None, None
 
-    h1_bias = get_h1_trend_bias(ticker)
+    # Check 4-Hour Trend Bias
+    h4_bias = get_h4_trend_bias(ticker)
+    
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 20:
         return None, None, None, None, None, None, None, None, None, None, None
@@ -228,9 +232,10 @@ def get_multi_strategy_signal(ticker):
     rsi_sell = rsi > 25 and rsi < 60
 
     sig = None
-    if (apa_buy or ema_buy) and rsi_buy:
+    # Enforce strict H4 Trend Agreement for higher probability win rates
+    if (apa_buy or ema_buy) and rsi_buy and h4_bias == "BULLISH":
         sig = "BUY"
-    elif (apa_sell or ema_sell) and rsi_sell:
+    elif (apa_sell or ema_sell) and rsi_sell and h4_bias == "BEARISH":
         sig = "SELL"
 
     if not sig:
@@ -254,7 +259,7 @@ def get_multi_strategy_signal(ticker):
         runner_target = close_p - (risk_distance * 2.8)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_pips)
-    return sig, close_p, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h1_bias
+    return sig, close_p, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h4_bias
 
 # --- CIRCUIT BREAKER & DAILY TARGET LOCK ---
 def check_circuit_breaker():
@@ -292,7 +297,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Access Granted:** Institutional Trading Engine active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Access Granted:** Institutional Trading Engine active with H4 Filtering.", parse_mode="Markdown")
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 **Engine Online:** Use `/status` to view system health.", parse_mode="Markdown")
     else:
@@ -470,7 +475,7 @@ async def signal_loop(app):
                 if label in active_trades:
                     continue
 
-                sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h1_bias = get_multi_strategy_signal(ticker)
+                sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h4_bias = get_multi_strategy_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
@@ -483,16 +488,16 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     professional_signal_text = (
-                        f"📊 **INSTITUTIONAL TRADE SIGNAL**\n"
+                        f"📊 **INSTITUTIONAL H4-FILTERED SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 **Instrument:** `{label}`\n"
+                        f"📌 **Instrument:** `{label}` | 🌐 **H4 Bias:** `{h4_bias}`\n"
                         f"📈 **Position:** {dir_icon} **{sig}**\n\n"
                         f"🔹 **Entry Price:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
                         f"💰 **Calculated Lot:** `{rec_lot}`\n\n"
                         f"📋 **Execution Parameters:**\n"
-                        f"1️⃣ Execute `{sig}` order at market entry.\n"
+                        f"1️⃣ Execute `{sig}` order aligned with H4 trend.\n"
                         f"2️⃣ Set Stop Loss strictly at `{sl:.{dec}f}`.\n"
                         f"3️⃣ Target objective set to `{tp:.{dec}f}` (3.5R).\n\n"
                         f"🕒 **Timestamp:** `{time_sent_str} WAT` | ⏳ **Valid Until:** `{time_expire_str} WAT`\n"
@@ -546,7 +551,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Institutional Trading Engine Active...")
+    logging.info("Kings™ Institutional Trading Engine Active with H4 Confluence...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
