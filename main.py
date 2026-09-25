@@ -56,8 +56,9 @@ TIMEFRAME_H1 = "1h"
 last_signals = {}
 authorized_users = set()
 sent_messages = []
-draft_signals = {}  # Stores clean public signal templates keyed by message_id
-active_trades = {}  # Tracks ongoing trades for lifecycle management
+draft_signals = {}      # Stores clean public signal templates keyed by message_id
+draft_be_updates = {}   # Stores clean breakeven channel messages keyed by message_id
+active_trades = {}      # Tracks ongoing trades for lifecycle management
 
 daily_stats = {
     "date": datetime.date.today(),
@@ -177,7 +178,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-STRATEGY CONFLUENCE ENGINE (High Expectancy 1:2 / 1:3 Filter) ---
+# --- MULTI-STRATEGY CONFLUENCE ENGINE ---
 def get_multi_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
         return None, None, None, None, None, None
@@ -208,7 +209,6 @@ def get_multi_strategy_signal(ticker):
     ema_buy = ema50 > ema200 and close_p > ema50
     ema_sell = ema50 < ema200 and close_p < ema50
 
-    # Hyper-selective momentum filtering
     rsi_buy = rsi < 65 and rsi > 45
     rsi_sell = rsi > 35 and rsi < 55
 
@@ -221,7 +221,6 @@ def get_multi_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None
 
-    # Targeting high Risk-to-Reward (1:2 to 1:3)
     tp_multiplier = 2.5 
     risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.3)
     sl_pips = risk_distance * 10000 if "JPY" not in ticker else risk_distance * 100
@@ -229,7 +228,7 @@ def get_multi_strategy_signal(ticker):
     if sig == "BUY":
         sl = close_p - risk_distance
         tp = close_p + (risk_distance * tp_multiplier)
-        be_level = close_p + (risk_distance * 0.5)  # Structural midpoint (50% progress) to prevent premature micro-stopouts
+        be_level = close_p + (risk_distance * 0.5)
     else:
         sl = close_p + risk_distance
         tp = close_p - (risk_distance * tp_multiplier)
@@ -353,9 +352,32 @@ async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE
             parse_mode="Markdown"
         )
 
-# --- ACTIVE TRADE LIFECYCLE MENTOR LOOP (With Professional Channel Messages) ---
+    elif data.startswith("postbe_"):
+        ticker_key = data.replace("postbe_", "")
+        be_info = draft_be_updates.pop(msg_id, None)
+        
+        public_be_text = be_info["text"] if be_info else f"📌 **Pair:** `{ticker_key}`\nTraders..."
+        
+        try:
+            posted_msg = await context.bot.send_message(
+                chat_id=CHANNEL_CHAT_ID,
+                text=public_be_text,
+                parse_mode="Markdown"
+            )
+            sent_messages.append((posted_msg.message_id, time.time()))
+            original_text = query.message.text
+            await query.edit_message_text(
+                text=f"✅ **[BREAKEVEN UPDATE POSTED TO CHANNEL]**\n\n{original_text}",
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logging.error(f"BE Broadcast error: {e}")
+            await query.edit_message_text(f"⚠️ **BROADCAST FAILED!** Error: `{e}`", parse_mode="Markdown")
+
+# --- ACTIVE TRADE LIFECYCLE MENTOR LOOP ---
 async def trade_lifecycle_mentor_loop(app):
-    global active_trades, daily_stats
+    global active_trades, daily_stats, draft_be_updates
     while True:
         await asyncio.sleep(60)
         if not active_trades:
@@ -392,7 +414,7 @@ async def trade_lifecycle_mentor_loop(app):
                         f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"✅ Price successfully secured Take Profit at `{tp:.{dec}f}`!\n\n"
-                        f"📢 **Ready-to-Send Channel Message:**\n"
+                        f"📢 **Channel Message Sent/Ready:**\n"
                         f"───────────────────\n"
                         f"🎯 **TP HIT! {label} Target Smashed!**\n"
                         f"We executed this with absolute precision and locked in our gains cleanly. Another flawless execution for the family! We pray for blue 💙🙌🏿🙏🏿.\n"
@@ -408,7 +430,7 @@ async def trade_lifecycle_mentor_loop(app):
                         f"🛑 **[STOP LOSS HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n\n"
-                        f"📢 **Ready-to-Send Channel Message:**\n"
+                        f"📢 **Channel Message Sent/Ready:**\n"
                         f"───────────────────\n"
                         f"🛡️ **Trade Update - {label}**\n"
                         f"Market structure shifted unexpectedly, but thank God we strictly managed our risk and locked our earlier protections in place. Capital preservation is key to long-term dominance. We bounce back stronger! 💙🙏🏿\n"
@@ -419,21 +441,41 @@ async def trade_lifecycle_mentor_loop(app):
                     daily_stats["consecutive_losses"] += 1
                     continue
 
-                # --- BREAKEVEN TRIGGER (Structural Midpoint Protection) ---
+                # --- BREAKEVEN TRIGGER (With Actionable Button) ---
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
-                    msg = (
-                        f"🛡️ **[MENTOR GUIDANCE: BREAKEVEN] - {label}**\n"
+                    
+                    public_be_text = (
+                        f"📌 **Pair:** `{label}`\n"
+                        f"Traders, our setup has cleared its structural midpoint with solid momentum. Per our professional risk protocols, kindly move your stop loss to entry right now. This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿."
+                    )
+
+                    admin_be_preview = (
+                        f"🛡️ **MENTOR GUIDANCE: BREAKEVEN - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📈 Price has reached the structural midpoint at `{current_price:.{dec}f}`.\n"
                         f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n\n"
-                        f"📢 **Ready-to-Send Channel Message:**\n"
+                        f"📢 **Channel Message Preview:**\n"
                         f"───────────────────\n"
-                        f"🔒 **VIP UPDATE: {label} to BREAKEVEN!**\n"
-                        f"Traders, our setup has cleared its structural midpoint with solid momentum. Per our professional risk protocols, kindly move your stop loss to entry right now. This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿.\n"
+                        f"{public_be_text}\n"
                         f"───────────────────"
                     )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+
+                    keyboard = [
+                        [InlineKeyboardButton("🚀 Post Breakeven Update to Channel", callback_data=f"postbe_{label}")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+
+                    sent_be_draft = await app.bot.send_message(
+                        chat_id=target_user,
+                        text=admin_be_preview,
+                        reply_markup=reply_markup,
+                        parse_mode="Markdown"
+                    )
+
+                    draft_be_updates[sent_be_draft.message_id] = {
+                        "text": public_be_text
+                    }
 
             except Exception as e:
                 logging.error(f"Trade lifecycle mentor error for {label}: {e}")
@@ -463,7 +505,6 @@ async def signal_loop(app):
                 await asyncio.sleep(300)
                 continue
 
-            # Cap active signals at a maximum of 3 concurrent trades to prevent confusion
             if len(active_trades) >= 3:
                 await asyncio.sleep(60)
                 continue
@@ -480,7 +521,7 @@ async def signal_loop(app):
                     break
 
                 if label in active_trades:
-                    continue  # Don't duplicate signals for already active trades
+                    continue
 
                 sig, entry, sl, tp, be_level, rec_lot = get_multi_strategy_signal(ticker)
 
@@ -539,7 +580,6 @@ async def signal_loop(app):
                         "be_level": be_level
                     }
 
-                    # Automatically register trade for private mentoring immediately!
                     active_trades[label] = {
                         "label": label,
                         "type": sig,
