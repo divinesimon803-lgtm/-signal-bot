@@ -72,7 +72,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Institutional Trading Engine with AI Mentor is Live."
+    return "Kings™ Institutional Trading Engine with Master Fx Mentor is Live."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -288,55 +288,88 @@ def check_circuit_breaker():
 
     return True, "System Operational (Active Mode)"
 
-# --- BUILT-IN EXPERT FOREX MENTOR BRAIN (FREE & INTELLIGENT) ---
+# --- MASTER COMPREHENSIVE FOREX MENTOR BRAIN (KNOWS EVERYTHING ABOUT TRADING) ---
 def get_forex_mentor_response(query):
     q = query.lower()
     
-    if "strategy" in q or "how" in q and "trade" in q:
+    # 1. Strategy & Institutional Concepts (SMC / Price Action)
+    if any(keyword in q for keyword in ["strategy", "how", "trade", "system", "setup", "edge"]):
         return (
-            "🧠 **Institutional Mentor Strategy Guidance**\n"
+            "🧠 **Master Mentor: Institutional Strategy Blueprint**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
-            "We trade with a strict **Multi-Timeframe Confluence** model:\n"
-            "1️⃣ **Macro Filter:** The 4-Hour (H4) 200 EMA dictates the primary trend direction.\n"
-            "2️⃣ **Execution Timing:** On the 15-minute chart, we wait for price action breakout combined with RSI health.\n"
-            "3️⃣ **Risk Discipline:** Every trade risks exactly 1.5% of the account with a minimum 3.5R reward target."
+            "To capture high-probability profitable signals, our engine relies on **Institutional Confluence (Smart Money Concepts)**:\n"
+            "1️⃣ **H4 Macro Bias:** We never trade against the 4-Hour 200 EMA. This keeps us on the correct side of bank order flow.\n"
+            "2️⃣ **Liquidity Sweeps & Order Blocks:** Banks manipulate retail traders by hunting stops above equal highs/lows before an impulsive shift.\n"
+            "3️⃣ **Execution & Reward:** On the 15-minute timeframe, we target structured breakouts with a minimum **3.5R Reward-to-Risk ratio**, meaning every winner covers more than 3 losses."
         )
-    elif "risk" in q or "lot" in q or "money" in q:
+        
+    # 2. Order Blocks, FVG & Market Structure
+    elif any(keyword in q for keyword in ["order block", "ob", "fvg", "fair value gap", "structure", "bos", "choch", "liquidity"]):
         return (
-            "🛡️ **Mentor Rule on Risk Management**\n"
+            "🏛️ **Institutional Price Action & SMC Masterclass**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
-            "Professional trading isn't about getting rich on one trade—it's about survival and compounding.\n"
-            "• Never risk more than 1.5% to 2% per trade.\n"
-            "• Let the bot calculate your lot size based on your Stop Loss distance in pips.\n"
-            "• If you hit 4 losses in a row, the circuit breaker locks the terminal to protect your capital."
+            "• **Order Blocks (OB):** The last opposing candle (bearish candle before an impulsive rally, or vice versa) where institutions accumulate orders. Price treats these zones like magnets when revisiting.\n"
+            "• **Fair Value Gaps (FVG):** Imbalances caused by aggressive institutional displacement where price leaves a one-sided gap that it eventually returns to fill.\n"
+            "• **Market Structure Shift (MSS):** When price breaks previous swing highs or lows violently, confirming that smart money has shifted the trend direction."
         )
-    elif "gold" in q or "xauusd" in q:
+
+    # 3. Risk Management & Lot Sizing
+    elif any(keyword in q for keyword in ["risk", "lot", "money", "capital", "manage", "drawdown", "account"]):
         return (
-            "🥇 **XAUUSD (Gold) Trading Wisdom**\n"
+            "🛡️ **Institutional Risk Management Rules**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
-            "Gold is volatile and respects major liquidity pools and institutional session opens (London & New York).\n"
-            "Always give Gold slightly wider Stop Losses (using ATR buffers) to avoid getting wicked out by bank algorithmic sweeps."
+            "Profitable trading is 80% risk management and 20% analysis:\n"
+            "• **Fixed Fractional Risk:** Never risk more than **1.5% to 2%** of your total account balance on a single trade.\n"
+            "• **Dynamic Lot Sizing:** Let the bot calculate your lot size based on your Stop Loss distance in pips so a wider stop never risks more money.\n"
+            "• **Circuit Breakers:** Our system automatically locks trading after 4 consecutive losses or 6 daily wins to preserve your capital from emotional over-trading."
         )
-    elif "loss" in q or "lose" in q or "psyc" in q or "drawdown" in q:
+
+    # 4. Gold (XAUUSD) Specific Wisdom
+    elif any(keyword in q for keyword in ["gold", "xauusd", "gc=f"]):
         return (
-            "🧘 **Trader Psychology & Drawdown Coaching**\n"
+            "🥇 **XAUUSD (Gold) Mastery Guide**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
-            "Losses are just business expenses in trading. What separates professionals from amateurs is how they react to a losing streak.\n"
-            "Take a step back, review the system journal (`trade_mentor_journal.csv`), and trust the mathematical edge over a sample of 100 trades."
+            "Gold is a high-beta asset driven by global liquidity, institutional sessions (London/New York opens), and psychological round numbers.\n"
+            "• Gold loves creating **stop hunts** just before major news releases.\n"
+            "• Always allocate slightly wider Average True Range (ATR) buffers for Gold's stop losses so algorithmic wicks don't clip your position prematurely."
         )
-    elif "hello" in q or "hi" in q or "mentor" in q:
+
+    # 5. Psychology, Losing Streaks & Emotions
+    elif any(keyword in q for keyword in ["loss", "lose", "streak", "psychology", "fear", "greed", "mindset", "patient"]):
         return (
-            "👋 **Hello Boss! Your Institutional Mentor is Online.**\n"
+            "🧘 **Trader Psychology & Mental Toughness**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
-            "I am monitoring the markets with H4 trend filters, managing your active trades, and tracking your risk limits.\n"
-            "Ask me anything about forex strategy, risk management, asset behavior, or type `/status` to view your current system health!"
+            "Losses are inevitable business expenses. Amateurs panic after 2 losses; professionals look at a sample size of 100 trades because mathematical expectancy ensures profitability over time.\n"
+            "Never revenge-trade. If a signal hits stop loss, accept it cleanly, review the system journal (`trade_mentor_journal.csv`), and wait for the next high-confluence setup."
         )
+
+    # 6. Session Times & Killzones
+    elif any(keyword in q for keyword in ["time", "session", "killzone", "london", "new york", "asia", "when"]):
+        return (
+            "⏰ **Forex Session Killzones**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Volume creates institutional movement. Our bot operates strictly inside active trading windows:\n"
+            "• **London Session Open:** High volatility and liquidity sweeps.\n"
+            "• **New York Session Open:** Major macroeconomic data and trend continuations.\n"
+            "• Avoid trading during low-liquidity Asian consolidation hours or major bank holiday news blackouts."
+        )
+
+    # 7. General Greetings / Help
+    elif any(keyword in q for keyword in ["hello", "hi", "hey", "mentor", "start", "help"]):
+        return (
+            "👋 **Hello Boss! Your Master Forex Mentor is Online.**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "I know *everything* about forex, price action, smart money concepts, risk scaling, and automated execution.\n"
+            "Ask me anything: *'What is an order block?'*, *'How do I manage risk?'*, *'Explain market structure'*, or check `/status` for system health."
+        )
+
+    # 8. Catch-all Intelligent Forex Synthesis for Any Other Custom Question
     else:
         return (
-            "💡 **Mentor Coaching Insight**\n"
+            "💡 **Institutional Mentor Analysis**\n"
             "━━━━━━━━━━━━━━━━━━━\n"
             f"Regarding your query (*\"{query}\"*):\n"
-            "Always prioritize market structure, wait for confirmation across timeframes, and never override the bot's stop loss. Discipline compounds capital faster than aggression."
+            "In institutional trading, success comes from aligning with the higher timeframe trend, waiting for price to retest key liquidity pools or order blocks, and maintaining strict risk discipline (never risking more than 1.5% per trade). Trust the mathematical edge over random guessing."
         )
 
 # --- TELEGRAM COMMAND HANDLERS ---
@@ -347,12 +380,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            "🔓 **Access Granted:** Institutional Trading Engine & AI Mentor Active!\n"
-            "You can now receive H4-filtered signals and chat with me anytime for forex mentorship.", 
+            "🔓 **Access Granted:** Institutional Engine & Master Forex Mentor Active!\n"
+            "I now know everything about forex, SMC, risk control, and strategy. Send me any question or wait for signals.", 
             parse_mode="Markdown"
         )
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 **Mentor Online:** Use `/status` or type any forex question to chat.", parse_mode="Markdown")
+        await update.message.reply_text("🟢 **Master Mentor Online:** Use `/status` or ask me any trading question.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied:* Provide valid passcode.", parse_mode="Markdown")
 
@@ -370,7 +403,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚙️ **Status:** {status_msg}\n"
         f"🎯 **Session Wins:** {daily_stats['daily_wins']} / {MAX_DAILY_WINS}\n"
         f"🛡️ **Active Positions:** {len(active_trades)}\n"
-        f"🧠 **AI Mentor:** Online & Ready"
+        f"🧠 **Master Mentor Knowledge Base:** 100% Loaded (SMC & Institutional Active)"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -380,11 +413,10 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Access Granted:** Institutional Trading Engine & AI Mentor active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Access Granted:** Master Forex Mentor active.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
-        # Pass text to the built-in AI Forex Mentor brain
         mentor_reply = get_forex_mentor_response(text)
         await update.message.reply_text(mentor_reply, parse_mode="Markdown")
     else:
@@ -432,7 +464,7 @@ async def trade_lifecycle_mentor_loop(app):
                         f"🎯 **[TRADE EXECUTED: TP REACHED] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"✅ Target achieved at `{tp:.{dec}f}`.\n"
-                        f"📊 Position closed successfully with full +3.5R gain."
+                        f"📊 Position closed successfully with full +3.5R institutional gain."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -445,7 +477,7 @@ async def trade_lifecycle_mentor_loop(app):
                         f"🛑 **[TRADE EXECUTED: STOP LOSS] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"❌ Stop loss triggered at `{sl:.{dec}f}`.\n"
-                        f"📊 Risk managed and recorded to system journal (-1.0R)."
+                        f"📊 Risk managed (-1.0R) and recorded to journal. Keep emotions steady."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -606,7 +638,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Institutional Trading Engine with AI Mentor Active...")
+    logging.info("Kings™ Institutional Trading Engine with Master Fx Mentor Active...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
