@@ -72,7 +72,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Institutional Trading Engine is Live."
+    return "Kings™ Institutional Trading Engine with AI Mentor is Live."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -200,7 +200,6 @@ def get_multi_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
         return None, None, None, None, None, None, None, None, None, None, None
 
-    # Check 4-Hour Trend Bias
     h4_bias = get_h4_trend_bias(ticker)
     
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
@@ -232,7 +231,6 @@ def get_multi_strategy_signal(ticker):
     rsi_sell = rsi > 25 and rsi < 60
 
     sig = None
-    # Enforce strict H4 Trend Agreement for higher probability win rates
     if (apa_buy or ema_buy) and rsi_buy and h4_bias == "BULLISH":
         sig = "BUY"
     elif (apa_sell or ema_sell) and rsi_sell and h4_bias == "BEARISH":
@@ -290,6 +288,57 @@ def check_circuit_breaker():
 
     return True, "System Operational (Active Mode)"
 
+# --- BUILT-IN EXPERT FOREX MENTOR BRAIN (FREE & INTELLIGENT) ---
+def get_forex_mentor_response(query):
+    q = query.lower()
+    
+    if "strategy" in q or "how" in q and "trade" in q:
+        return (
+            "🧠 **Institutional Mentor Strategy Guidance**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "We trade with a strict **Multi-Timeframe Confluence** model:\n"
+            "1️⃣ **Macro Filter:** The 4-Hour (H4) 200 EMA dictates the primary trend direction.\n"
+            "2️⃣ **Execution Timing:** On the 15-minute chart, we wait for price action breakout combined with RSI health.\n"
+            "3️⃣ **Risk Discipline:** Every trade risks exactly 1.5% of the account with a minimum 3.5R reward target."
+        )
+    elif "risk" in q or "lot" in q or "money" in q:
+        return (
+            "🛡️ **Mentor Rule on Risk Management**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Professional trading isn't about getting rich on one trade—it's about survival and compounding.\n"
+            "• Never risk more than 1.5% to 2% per trade.\n"
+            "• Let the bot calculate your lot size based on your Stop Loss distance in pips.\n"
+            "• If you hit 4 losses in a row, the circuit breaker locks the terminal to protect your capital."
+        )
+    elif "gold" in q or "xauusd" in q:
+        return (
+            "🥇 **XAUUSD (Gold) Trading Wisdom**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Gold is volatile and respects major liquidity pools and institutional session opens (London & New York).\n"
+            "Always give Gold slightly wider Stop Losses (using ATR buffers) to avoid getting wicked out by bank algorithmic sweeps."
+        )
+    elif "loss" in q or "lose" in q or "psyc" in q or "drawdown" in q:
+        return (
+            "🧘 **Trader Psychology & Drawdown Coaching**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Losses are just business expenses in trading. What separates professionals from amateurs is how they react to a losing streak.\n"
+            "Take a step back, review the system journal (`trade_mentor_journal.csv`), and trust the mathematical edge over a sample of 100 trades."
+        )
+    elif "hello" in q or "hi" in q or "mentor" in q:
+        return (
+            "👋 **Hello Boss! Your Institutional Mentor is Online.**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "I am monitoring the markets with H4 trend filters, managing your active trades, and tracking your risk limits.\n"
+            "Ask me anything about forex strategy, risk management, asset behavior, or type `/status` to view your current system health!"
+        )
+    else:
+        return (
+            "💡 **Mentor Coaching Insight**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"Regarding your query (*\"{query}\"*):\n"
+            "Always prioritize market structure, wait for confirmation across timeframes, and never override the bot's stop loss. Discipline compounds capital faster than aggression."
+        )
+
 # --- TELEGRAM COMMAND HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -297,9 +346,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Access Granted:** Institutional Trading Engine active with H4 Filtering.", parse_mode="Markdown")
+        await update.message.reply_text(
+            "🔓 **Access Granted:** Institutional Trading Engine & AI Mentor Active!\n"
+            "You can now receive H4-filtered signals and chat with me anytime for forex mentorship.", 
+            parse_mode="Markdown"
+        )
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 **Engine Online:** Use `/status` to view system health.", parse_mode="Markdown")
+        await update.message.reply_text("🟢 **Mentor Online:** Use `/status` or type any forex question to chat.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied:* Provide valid passcode.", parse_mode="Markdown")
 
@@ -317,6 +370,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚙️ **Status:** {status_msg}\n"
         f"🎯 **Session Wins:** {daily_stats['daily_wins']} / {MAX_DAILY_WINS}\n"
         f"🛡️ **Active Positions:** {len(active_trades)}\n"
+        f"🧠 **AI Mentor:** Online & Ready"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -326,12 +380,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Access Granted:** Institutional Trading Engine active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Access Granted:** Institutional Trading Engine & AI Mentor active.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
-        is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 **System Status:** {status_msg}\nUse `/status` to review diagnostics.", parse_mode="Markdown")
+        # Pass text to the built-in AI Forex Mentor brain
+        mentor_reply = get_forex_mentor_response(text)
+        await update.message.reply_text(mentor_reply, parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied:* Authentication required.", parse_mode="Markdown")
 
@@ -551,7 +606,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Institutional Trading Engine Active with H4 Confluence...")
+    logging.info("Kings™ Institutional Trading Engine with AI Mentor Active...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
