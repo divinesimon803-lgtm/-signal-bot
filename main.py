@@ -71,11 +71,67 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Aggressive Profit Hunter Engine is Live 💙!"
+    return "Kings™ Autonomous AI Trading Mentor & Engine is Live 💙!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+# --- AUTONOMOUS AI MENTOR REASONING ENGINE ---
+def generate_ai_mentor_rationale(signal_type, ticker, entry, sl, tp, rsi, ema50, h1_bias):
+    """
+    Acts as your full-time AI mentor. Generates real-time, uncompromising logic,
+    explains trade structure, and dictates strict instructions to lock wins and minimize loss.
+    """
+    bias_desc = f"Higher timeframe H1 bias is {h1_bias}."
+    if signal_type == "BUY":
+        rationale = (
+            f"The market structure formed a clean bullish confluence. RSI ({rsi:.1f}) indicates healthy upward momentum "
+            f"without being overextended, and price is holding above the 50 EMA. {bias_desc} "
+            f"We are fighting for maximum upside expansion while keeping risk strictly guarded."
+        )
+        instruction = (
+            f"1️⃣ **Execute BUY instantly at {entry}.\n"
+            f"2️⃣ **Lock Stop Loss firmly at {sl} and DO NOT move it or interfere.** Let the math work.\n"
+            f"3️⃣ **Target final profit at {tp} (3.5x reward).** Scale out portions when instructed."
+        )
+    else:
+        rationale = (
+            f"Bearish confluence detected across indicators. RSI ({rsi:.1f}) confirms downside pressure, "
+            f"and price action is rejecting key resistance levels below the 50 EMA. {bias_desc} "
+            f"We strike aggressively to capture the downward sweep."
+        )
+        instruction = (
+            f"1️⃣ **Execute SELL instantly at {entry}.\n"
+            f"2️⃣ **Lock Stop Loss firmly at {sl} and DO NOT touch it.** Trust the structural setup.\n"
+            f"3️⃣ **Target downside liquidity at {tp} (3.5x reward).** Stay disciplined."
+        )
+    return rationale, instruction
+
+# --- AUTOMATED JOURNALING MODULE ---
+def log_trade_to_journal(label, trade_type, entry, exit_price, outcome, pnl_est):
+    """
+     Automatically logs every completed trade to a local CSV journal file for data review.
+    """
+    journal_file = "trade_mentor_journal.csv"
+    file_exists = os.path.exists(journal_file)
+    
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_data = pd.DataFrame([{
+        "Timestamp": timestamp,
+        "Asset": label,
+        "Type": trade_type,
+        "Entry": entry,
+        "Exit": exit_price,
+        "Outcome": outcome,
+        "Est_PnL": pnl_est
+    }])
+    
+    try:
+        log_data.to_csv(journal_file, mode='a', header=not file_exists, index=False)
+        logging.info(f"Journal updated: {label} {outcome}")
+    except Exception as e:
+        logging.error(f"Journal writing error: {e}")
 
 # --- DYNAMIC RISK & LOT SIZE CALCULATOR ---
 def calculate_dynamic_lot(ticker, sl_pips):
@@ -111,13 +167,12 @@ async def check_news_blackout():
         logging.error(f"News Guard check error: {e}")
     return False
 
-# --- EXPANDED SESSION KILLZONE FILTER (AGRESSIVE TRADING HOURS) ---
+# --- SESSION KILLZONE FILTER ---
 def is_in_session_killzone(ticker):
     if ticker == "BTC-USD":
         return True
 
     now_utc = datetime.datetime.now(datetime.timezone.utc).time()
-    # Expanded trading hours covering European, NY sessions, and active transition windows
     session_start = datetime.time(6, 0)
     session_end = datetime.time(18, 0)
 
@@ -175,18 +230,18 @@ def get_h1_trend_bias(ticker):
 # --- AGGRESSIVE MULTI-STRATEGY CONFLUENCE ENGINE ---
 def get_multi_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None, None, None
 
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 20:
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
     prev_c = df_m15.iloc[-3]
     
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']) or pd.isna(c['ema200']):
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
     close_p = float(c['Close'])
@@ -197,14 +252,13 @@ def get_multi_strategy_signal(ticker):
     recent_high = float(df_m15['High'].iloc[-12:-3].max())
     recent_low = float(df_m15['Low'].iloc[-12:-3].min())
 
-    # Aggressive breakout triggers allowing quick market responsiveness
     apa_buy = close_p > recent_high and float(prev_c['Close']) <= recent_high
     apa_sell = close_p < recent_low and float(prev_c['Close']) >= recent_low
 
     ema_buy = close_p > ema50
     ema_sell = close_p < ema50
 
-    rsi_buy = rsi < 75 and rsi > 40  # Warmed up RSI parameters to capture aggressive momentum
+    rsi_buy = rsi < 75 and rsi > 40  
     rsi_sell = rsi > 25 and rsi < 60
 
     sig = None
@@ -214,9 +268,8 @@ def get_multi_strategy_signal(ticker):
         sig = "SELL"
 
     if not sig:
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None, None, None
 
-    # Aggressive reward multipliers (Targeting 3.5x for massive win potential)
     tp_multiplier = 3.5 
     risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.2)
     sl_pips = risk_distance * 10000 if "JPY" not in ticker else risk_distance * 100
@@ -235,7 +288,7 @@ def get_multi_strategy_signal(ticker):
         runner_target = close_p - (risk_distance * 2.8)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_pips)
-    return sig, close_p, sl, tp, partial_target, be_level, runner_target, rec_lot
+    return sig, close_p, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h1_bias
 
 # --- CIRCUIT BREAKER & DAILY TARGET LOCK ---
 def check_circuit_breaker():
@@ -251,7 +304,7 @@ def check_circuit_breaker():
             "trading_paused": False,
             "pause_reason": None
         }
-        return True, "Trading Active (Aggressive Mode)"
+        return True, "Trading Active (Aggressive AI Mentor Mode)"
 
     if daily_stats["daily_wins"] >= MAX_DAILY_WINS:
         daily_stats["trading_paused"] = True
@@ -264,7 +317,7 @@ def check_circuit_breaker():
     if daily_stats["trading_paused"]:
         return False, daily_stats.get("pause_reason", "Trading paused by Circuit Breaker.")
 
-    return True, "Trading Active (Aggressive Mode)"
+    return True, "Trading Active (Aggressive AI Mentor Mode)"
 
 # --- TELEGRAM COMMAND HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -273,9 +326,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Aggressive Profit Hunter active 💙🔥", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Autonomous AI Trading Mentor active 💙🔥", parse_mode="Markdown")
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 **Hunter Engine Active.** Send `/status` for health.", parse_mode="Markdown")
+        await update.message.reply_text("🟢 **AI Mentor Engine Active.** Send `/status` for health.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send the passcode directly to authorize.", parse_mode="Markdown")
 
@@ -288,12 +341,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_active, status_msg = check_circuit_breaker()
 
     msg = (
-        f"📊 **AGGRESSIVE PROFIT HUNTER STATUS**\n"
+        f"📊 **AUTONOMOUS AI MENTOR STATUS**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Status:** {status_msg}\n"
         f"🎯 **Today's Wins:** {daily_stats['daily_wins']} / {MAX_DAILY_WINS}\n"
         f"🛡️ **Active Positions Monitored:** {len(active_trades)}\n"
-        f"💙 **Motto:** We fight for wins! We pray for blue 💙🔥\n"
+        f"💙 **Motto:** We fight for wins and minimize losses! 💙🔥\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -303,12 +356,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Aggressive Hunter active 💙.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Autonomous AI Mentor active 💙.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
         is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 **Hunter Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
+        await update.message.reply_text(f"🟢 **Mentor Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode in direct messages.", parse_mode="Markdown")
 
@@ -316,7 +369,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def trade_lifecycle_mentor_loop(app):
     global active_trades, daily_stats
     while True:
-        await asyncio.sleep(45)  # Faster polling for real-time tactical modifications
+        await asyncio.sleep(45)  # Fast polling for real-time tactical instructions
         if not active_trades:
             continue
 
@@ -349,11 +402,12 @@ async def trade_lifecycle_mentor_loop(app):
                 # --- TAKE PROFIT HIT ---
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     daily_stats["daily_wins"] += 1
+                    log_trade_to_journal(label, trade_type, entry, current_price, "WIN (TP Hit)", "+3.5R")
                     msg = (
-                        f"🎯 **[MOONSHOT TARGET SMASHED] - {label}**\n"
+                        f"🎯 **[AI MENTOR: TARGET SMASHED] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"✅ Price conquered full Take Profit at `{tp:.{dec}f}`!\n\n"
-                        f"Absolute domination! We fought for every pip and won. We pray for blue 💙🔥."
+                        f"🧠 **Mentor Analysis:** Absolute domination. We held our ground, followed instructions, and secured full victory. We pray for blue 💙🔥."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -361,11 +415,12 @@ async def trade_lifecycle_mentor_loop(app):
 
                 # --- STOP LOSS HIT ---
                 elif (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
+                    log_trade_to_journal(label, trade_type, entry, current_price, "LOSS (SL Hit)", "-1.0R")
                     msg = (
-                        f"🛑 **[STOP LOSS HIT] - {label}**\n"
+                        f"🛑 **[AI MENTOR: STOP LOSS HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"❌ Price hit Stop Loss at `{sl:.{dec}f}`.\n\n"
-                        f"Controlled risk. We stay sharp, reload, and hunt right back! 💙"
+                        f"❌ Price hit structural Stop Loss at `{sl:.{dec}f}`.\n\n"
+                        f"🧠 **Mentor Analysis:** Controlled loss contained precisely as planned. Do not panic-trade or try to revenge-trade. Stay sharp, reload, and hunt right back! 💙"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -376,10 +431,10 @@ async def trade_lifecycle_mentor_loop(app):
                 if not trade["partial_hit"] and ((trade_type == "BUY" and current_price >= partial_target) or (trade_type == "SELL" and current_price <= partial_target)):
                     trade["partial_hit"] = True
                     msg = (
-                        f"⚡ **TACTICAL ALERT: TAKE PARTIALS - {label}**\n"
+                        f"⚡ **AI COMMAND: TAKE PARTIALS - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"💰 Price reached 1.0R profit at `{current_price:.{dec}f}`.\n"
-                        f"👉 **Action:** Close 50% of your position now to bank guaranteed profit, and let the rest run aggressively!"
+                        f"👉 **Strict Instruction:** Close 50% of your position now to bank guaranteed profit, and let the rest run under my direct command!"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
@@ -387,10 +442,10 @@ async def trade_lifecycle_mentor_loop(app):
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
                     msg = (
-                        f"🛡️ **TACTICAL ALERT: MOVE TO BREAKEVEN - {label}**\n"
+                        f"🛡️ **AI COMMAND: MOVE TO BREAKEVEN - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📈 Price pushed to `{current_price:.{dec}f}`.\n"
-                        f"👉 **Action:** Shift your Stop Loss to your entry price (`{entry:.{dec}f}`). Trade is now 100% risk-free!"
+                        f"👉 **Strict Instruction:** Shift your Stop Loss to your entry price (`{entry:.{dec}f}`). This trade is now 100% risk-free!"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
@@ -398,10 +453,10 @@ async def trade_lifecycle_mentor_loop(app):
                 if not trade["runner_hit"] and ((trade_type == "BUY" and current_price >= runner_target) or (trade_type == "SELL" and current_price <= runner_target)):
                     trade["runner_hit"] = True
                     msg = (
-                        f"🚀 **TACTICAL ALERT: TRAIL RUNNERS - {label}**\n"
+                        f"🚀 **AI COMMAND: TRAIL RUNNERS - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"🔥 Price surged to `{current_price:.{dec}f}`.\n"
-                        f"👉 **Action:** Trail your Stop Loss closer to lock in massive gains as we charge toward the final moonshot target!"
+                        f"👉 **Strict Instruction:** Trail your Stop Loss closer to lock in massive gains as we charge toward the final moonshot target!"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
@@ -417,7 +472,7 @@ async def heartbeat_loop(app):
             is_active, status_msg = check_circuit_breaker()
             status_icon = "🟢" if is_active else "🔴"
             
-            msg_text = f"{status_icon} *[Aggressive Hunter Heartbeat]* Status: {status_msg} ({formatted_wat}) | We fight for wins 💙"
+            msg_text = f"{status_icon} *[AI Mentor Heartbeat]* Status: {status_msg} ({formatted_wat}) | Fighting for max wins 💙"
             await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat error: {e}")
@@ -432,7 +487,7 @@ async def signal_loop(app):
                 await asyncio.sleep(300)
                 continue
 
-            if len(active_trades) >= 4:  # Increased simultaneous active trade slots for high aggression
+            if len(active_trades) >= 4:  
                 await asyncio.sleep(45)
                 continue
 
@@ -450,11 +505,14 @@ async def signal_loop(app):
                 if label in active_trades:
                     continue
 
-                sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot = get_multi_strategy_signal(ticker)
+                sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h1_bias = get_multi_strategy_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
                     dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
+
+                    # Generate AI Mentor Rationale & Instructions
+                    rationale, instruction = generate_ai_mentor_rationale(sig, ticker, entry, sl, tp, rsi, ema50, h1_bias)
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                     expires_wat = now_wat + datetime.timedelta(minutes=20)
@@ -462,9 +520,8 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    # Clean, high-octane signal alert format
                     personal_signal_text = (
-                        f"🔥 **AGGRESSIVE PROFIT HUNTER SIGNAL** 🔥\n"
+                        f"🧠🔥 **AUTONOMOUS AI TRADING MENTOR SIGNAL** 🔥🧠\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Pair:** `{label}`\n"
                         f"📈 **Action:** {dir_emoji} **{sig}**\n\n"
@@ -472,8 +529,10 @@ async def signal_loop(app):
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
                         f"💰 **Lot Size:** `{rec_lot}`\n\n"
+                        f"💡 **AI Rationale & Analysis:**\n{rationale}\n\n"
+                        f"📋 **Strict Mentor Instructions:**\n{instruction}\n\n"
                         f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`\n\n"
-                        f"💙 *We fight for wins! We pray for blue* 💙🔥"
+                        f"💙 *We fight for wins, protect capital, and conquer!* 💙🔥"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -523,7 +582,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Aggressive Profit Hunter Active & Running 💙🔥...")
+    logging.info("Kings™ Autonomous AI Trading Mentor Active & Running 💙🔥...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
