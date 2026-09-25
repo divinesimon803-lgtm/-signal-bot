@@ -9,21 +9,19 @@ import ta
 import yfinance as yf
 from flask import Flask
 from threading import Thread
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
 
 # --- CONFIGURATION ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYj9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Admin Personal Chat ID
-CHANNEL_CHAT_ID = os.getenv("CHANNEL_CHAT_ID", "-1003723594631")  # Kings™ Channel ID
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Personal Master Chat ID
 BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
@@ -55,10 +53,7 @@ TIMEFRAME_H1 = "1h"
 # --- SYSTEM STATE TRACKERS ---
 last_signals = {}
 authorized_users = set()
-sent_messages = []
-draft_signals = {}      # Stores clean public signal templates keyed by message_id
-draft_be_updates = {}   # Stores clean breakeven channel messages keyed by message_id
-active_trades = {}      # Tracks ongoing trades for lifecycle management
+active_trades = {}      # Tracks ongoing trades for personal lifecycle management
 
 daily_stats = {
     "date": datetime.date.today(),
@@ -76,7 +71,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Kings™ Active Trade Lifecycle Mentor & Signal Dispatcher is Live!"
+    return "Kings™ Personal Mentor & Profit Hunter Engine is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -273,7 +268,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Profit Hunter active 💙🙌🏿🙏🏿", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Personal Mentor Engine active 💙🙌🏿🙏🏿", parse_mode="Markdown")
     elif user_id in authorized_users:
         await update.message.reply_text("🟢 **Engine Active.** Send `/status` for bot health.", parse_mode="Markdown")
     else:
@@ -288,7 +283,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_active, status_msg = check_circuit_breaker()
 
     msg = (
-        f"📊 **KINGS™ ENGINE STATUS**\n"
+        f"📊 **PERSONAL MENTOR ENGINE STATUS**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Circuit Breaker:** {status_msg}\n"
         f"🎯 **Today's Wins:** {daily_stats['daily_wins']} / {MAX_DAILY_WINS}\n"
@@ -303,81 +298,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Passcode accepted!** Kings™ Profit Engine active 💙.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Passcode accepted!** Personal Mentor Engine active 💙.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
         is_active, status_msg = check_circuit_breaker()
-        await update.message.reply_text(f"🟢 **Kings™ Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
+        await update.message.reply_text(f"🟢 **Mentor Status:** {status_msg}\nUse `/status` to review engine health.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied!* Send correct passcode in direct messages.", parse_mode="Markdown")
 
-async def handle_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    msg_id = query.message.message_id
-
-    if data.startswith("approve_"):
-        ticker_key = data.replace("approve_", "")
-        signal_info = draft_signals.pop(msg_id, None)
-        
-        public_signal_text = signal_info["text"] if signal_info else f"📌 **Pair:** `{ticker_key}`\n📈 **Action Approved & Posted**"
-        
-        try:
-            posted_msg = await context.bot.send_message(
-                chat_id=CHANNEL_CHAT_ID,
-                text=public_signal_text,
-                parse_mode="Markdown"
-            )
-            sent_messages.append((posted_msg.message_id, time.time()))
-            original_text = query.message.text
-            await query.edit_message_text(
-                text=f"✅ **[APPROVED & POSTED TO PUBLIC CHANNEL]**\n\n{original_text}",
-                reply_markup=None,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logging.error(f"Broadcast error: {e}")
-            await query.edit_message_text(f"⚠️ **BROADCAST FAILED!** Error: `{e}`", parse_mode="Markdown")
-
-    elif data.startswith("reject_"):
-        ticker_key = data.replace("reject_", "")
-        draft_signals.pop(msg_id, None)
-        original_text = query.message.text
-        await query.edit_message_text(
-            text=f"❌ **[SIGNAL DISCARDED FOR {ticker_key}]**\n\n{original_text}",
-            reply_markup=None,
-            parse_mode="Markdown"
-        )
-
-    elif data.startswith("postbe_"):
-        ticker_key = data.replace("postbe_", "")
-        be_info = draft_be_updates.pop(msg_id, None)
-        
-        public_be_text = be_info["text"] if be_info else f"📌 **Pair:** `{ticker_key}`\nTraders..."
-        
-        try:
-            posted_msg = await context.bot.send_message(
-                chat_id=CHANNEL_CHAT_ID,
-                text=public_be_text,
-                parse_mode="Markdown"
-            )
-            sent_messages.append((posted_msg.message_id, time.time()))
-            original_text = query.message.text
-            await query.edit_message_text(
-                text=f"✅ **[BREAKEVEN UPDATE POSTED TO CHANNEL]**\n\n{original_text}",
-                reply_markup=None,
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logging.error(f"BE Broadcast error: {e}")
-            await query.edit_message_text(f"⚠️ **BROADCAST FAILED!** Error: `{e}`", parse_mode="Markdown")
-
 # --- ACTIVE TRADE LIFECYCLE MENTOR LOOP ---
 async def trade_lifecycle_mentor_loop(app):
-    global active_trades, daily_stats, draft_be_updates
+    global active_trades, daily_stats
     while True:
         await asyncio.sleep(60)
         if not active_trades:
@@ -414,11 +346,7 @@ async def trade_lifecycle_mentor_loop(app):
                         f"🎯 **[PROFESSIONAL TARGET HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"✅ Price successfully secured Take Profit at `{tp:.{dec}f}`!\n\n"
-                        f"📢 **Channel Message Sent/Ready:**\n"
-                        f"───────────────────\n"
-                        f"🎯 **TP HIT! {label} Target Smashed!**\n"
-                        f"We executed this with absolute precision and locked in our gains cleanly. Another flawless execution for the family! We pray for blue 💙🙌🏿🙏🏿.\n"
-                        f"───────────────────"
+                        f"Target smashed cleanly. Absolute precision. We pray for blue 💙🙌🏿🙏🏿."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -430,52 +358,25 @@ async def trade_lifecycle_mentor_loop(app):
                         f"🛑 **[STOP LOSS HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"❌ Price breached Stop Loss at `{sl:.{dec}f}`.\n\n"
-                        f"📢 **Channel Message Sent/Ready:**\n"
-                        f"───────────────────\n"
-                        f"🛡️ **Trade Update - {label}**\n"
-                        f"Market structure shifted unexpectedly, but thank God we strictly managed our risk and locked our earlier protections in place. Capital preservation is key to long-term dominance. We bounce back stronger! 💙🙏🏿\n"
-                        f"───────────────────"
+                        f"Risk managed strictly as planned. Capital protected. We analyze, adapt, and bounce back stronger! 💙🙏🏿"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
                     daily_stats["consecutive_losses"] += 1
                     continue
 
-                # --- BREAKEVEN TRIGGER (With Actionable Button) ---
+                # --- BREAKEVEN GUIDANCE TRIGGER ---
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
                     
-                    public_be_text = (
-                        f"📌 **Pair:** `{label}`\n"
-                        f"Traders, our setup has cleared its structural midpoint with solid momentum. Per our professional risk protocols, kindly move your stop loss to entry right now. This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿."
-                    )
-
-                    admin_be_preview = (
+                    be_msg = (
                         f"🛡️ **MENTOR GUIDANCE: BREAKEVEN - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📈 Price has reached the structural midpoint at `{current_price:.{dec}f}`.\n"
                         f"👉 **Action Required:** Modify your Stop Loss on **{label}** to your entry price (`{entry:.{dec}f}`).\n\n"
-                        f"📢 **Channel Message Preview:**\n"
-                        f"───────────────────\n"
-                        f"{public_be_text}\n"
-                        f"───────────────────"
+                        f"This trade is now 100% risk-free. We hunt for profits with zero stress! We pray for blue 💙🙌🏿🙏🏿."
                     )
-
-                    keyboard = [
-                        [InlineKeyboardButton("🚀 Post Breakeven Update to Channel", callback_data=f"postbe_{label}")]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
-                    sent_be_draft = await app.bot.send_message(
-                        chat_id=target_user,
-                        text=admin_be_preview,
-                        reply_markup=reply_markup,
-                        parse_mode="Markdown"
-                    )
-
-                    draft_be_updates[sent_be_draft.message_id] = {
-                        "text": public_be_text
-                    }
+                    await app.bot.send_message(chat_id=target_user, text=be_msg, parse_mode="Markdown")
 
             except Exception as e:
                 logging.error(f"Trade lifecycle mentor error for {label}: {e}")
@@ -489,15 +390,14 @@ async def heartbeat_loop(app):
             is_active, status_msg = check_circuit_breaker()
             status_icon = "🟢" if is_active else "🔴"
             
-            msg_text = f"{status_icon} *[Bot Heartbeat]* Kings™ Profit Hunter Status: {status_msg} ({formatted_wat}) | We pray for blue 💙"
-            msg = await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
-            sent_messages.append((msg.message_id, time.time()))
+            msg_text = f"{status_icon} *[Personal Mentor Heartbeat]* Status: {status_msg} ({formatted_wat}) | We pray for blue 💙"
+            await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_text, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat error: {e}")
         await asyncio.sleep(3600)
 
 async def signal_loop(app):
-    global last_signals, draft_signals, active_trades
+    global last_signals, active_trades
     while True:
         try:
             is_active, _ = check_circuit_breaker()
@@ -535,50 +435,26 @@ async def signal_loop(app):
                     time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_emoji = "🟢" if sig == "BUY" else "🔴"
 
-                    public_channel_text = (
+                    # Personal Mentor Signal Alert (Cleaned: No Breakeven shown upfront)
+                    personal_signal_text = (
+                        f"📊 **PROFESSIONAL MENTOR SIGNAL ALERT**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Pair:** `{label}`\n"
                         f"📈 **Action:** {dir_emoji} **{sig}**\n\n"
                         f"🔹 **Entry:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
-                        f"🎯 **Take Profit:** `{tp:.{dec}f}`\n\n"
-                        f"🛡️ **Breakeven Target:** `{be_level:.{dec}f}`\n\n"
+                        f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
+                        f"💰 **Lot Size:** `{rec_lot}`\n\n"
                         f"🕒 **Time:** `{time_sent_str} WAT` | ⏳ **Valid:** `{time_expire_str} WAT`\n\n"
                         f"💙 *We pray for blue* 💙🙌🏿🙏🏿"
                     )
 
-                    admin_preview_text = (
-                        f"📋 **NEW MENTOR SIGNAL ALERT ({label})**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"{public_channel_text}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🛡️ **Active Mentor Tracking Started Automatically!**\n"
-                        f"Tap 🚀 below *only* if you also want to broadcast this to the public channel."
-                    )
-
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("🚀 Approve & Post to Channel", callback_data=f"approve_{label}"),
-                            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{label}")
-                        ]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-                    sent_draft = await app.bot.send_message(
+                    await app.bot.send_message(
                         chat_id=target_user,
-                        text=admin_preview_text,
-                        reply_markup=reply_markup,
+                        text=personal_signal_text,
                         parse_mode="Markdown"
                     )
-
-                    draft_signals[sent_draft.message_id] = {
-                        "text": public_channel_text,
-                        "type": sig,
-                        "entry": entry,
-                        "sl": sl,
-                        "tp": tp,
-                        "be_level": be_level
-                    }
 
                     active_trades[label] = {
                         "label": label,
@@ -612,12 +488,11 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
-    app.add_handler(CallbackQueryHandler(handle_button_click))
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Profit Hunter & Lifecycle Mentor Active & Running 💙...")
+    logging.info("Kings™ Personal Mentor & Profit Hunter Active & Running 💙...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
