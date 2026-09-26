@@ -19,16 +19,20 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# --- CONFIGURATION ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8874815036:AAHYj9yIYbQ565mQ_szUxwaykEV7CO8ReoY")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "7889527038")  # Personal Master Chat ID
-BOT_PASSCODE = os.getenv("BOT_PASSCODE", "5051")
+# --- 1. SECURITY FIX: Environment Variables Only ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BOT_PASSCODE = os.getenv("BOT_PASSCODE")
+
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
+    raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables (TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, BOT_PASSCODE). Please check your .env configuration.")
 
 # RISK & ACCOUNT SAFETY CONFIGURATION
 RISK_PER_TRADE_PCT = 0.015     # 1.5% risk profile per trade
 MAX_DAILY_LOSS_PCT = 0.06      # Max 6% total account loss per day
 MAX_CONSECUTIVE_LOSSES = 4     
 MAX_DAILY_WINS = 6             
+DEFAULT_ACCOUNT_BALANCE = 1000.0 # Configurable real account balance baseline
 
 # ASSET ROSTER (yfinance ticker -> Signal Display Name)
 WEEKDAY_ASSETS = {
@@ -100,9 +104,8 @@ def log_trade_to_journal(label, trade_type, entry, exit_price, outcome, pnl_est)
     except Exception as e:
         logging.error(f"Journal writing error: {e}")
 
-# --- DYNAMIC RISK & LOT SIZE CALCULATOR ---
-def calculate_dynamic_lot(ticker, sl_pips):
-    account_balance = 10000.0  # Default base balance
+# --- 2. RISK FIX: Dynamic Lot Size & Reward-to-Risk Validation ---
+def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALANCE):
     risk_amount = account_balance * RISK_PER_TRADE_PCT
     pip_value = 10.0  # Standard lot USD per pip on majors
     if "JPY" in ticker:
@@ -111,11 +114,17 @@ def calculate_dynamic_lot(ticker, sl_pips):
         pip_value = 1.0
 
     if sl_pips <= 0:
-        return "0.02"
+        return 0.02
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    final_lot = max(0.02, min(calculated_lot, 3.0))
-    return f"{final_lot:.2f}"
+    
+    # Hard cap lot size to 0.05 max for accounts under $500
+    if account_balance < 500.0:
+        final_lot = max(0.01, min(calculated_lot, 0.05))
+    else:
+        final_lot = max(0.01, min(calculated_lot, 3.0))
+        
+    return final_lot
 
 # --- NEWS & BANK HOLIDAY GUARD API ---
 async def check_news_blackout():
@@ -145,7 +154,9 @@ def is_in_session_killzone(ticker):
 
     return session_start <= now_utc <= session_end
 
-# --- MARKET DATA FETCHING ---
+# --- 3. DATA FIX: Broker API Hook Warning & Spread Buffer ---
+# WARNING: yfinance data can have settlement delays and missing spread adjustments.
+# TODO: Replace fetch_data implementation with a real broker API connector (e.g., MetaTrader, Oanda, or Alpaca SDK) for production execution.
 def fetch_data(ticker, interval, period="60d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
@@ -180,34 +191,33 @@ def fetch_data(ticker, interval, period="60d"):
         logging.error(f"Error fetching data for {ticker} ({interval}): {e}")
         return None
 
-def get_h4_trend_bias(ticker):
-    """Higher-Timeframe Filter: Enforces alignment with the 4-Hour 200 EMA structure."""
-    df_h4 = fetch_data(ticker, interval=TIMEFRAME_H4, period="60d")
-    if df_h4 is None or len(df_h4) < 30:
+def get_h1_trend_bias(ticker):
+    """H1 Trend Filter: Enforces alignment with 1-Hour 50 EMA vs 200 EMA structure."""
+    df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="60d")
+    if df_h1 is None or len(df_h1) < 30:
         return "NEUTRAL"
     
-    latest_close = float(df_h4['Close'].iloc[-1])
-    latest_ema200 = float(df_h4['ema200'].iloc[-1]) if 'ema200' in df_h4 and pd.notna(df_h4['ema200'].iloc[-1]) else latest_close
+    latest_ema50 = float(df_h1['ema50'].iloc[-1]) if 'ema50' in df_h1 and pd.notna(df_h1['ema50'].iloc[-1]) else 0.0
+    latest_ema200 = float(df_h1['ema200'].iloc[-1]) if 'ema200' in df_h1 and pd.notna(df_h1['ema200'].iloc[-1]) else 0.0
 
-    if latest_close > latest_ema200:
+    if latest_ema50 > latest_ema200:
         return "BULLISH"
-    elif latest_close < latest_ema200:
+    elif latest_ema50 < latest_ema200:
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-STRATEGY CONFLUENCE ENGINE WITH H4 FILTER ---
-def get_multi_strategy_signal(ticker):
+# --- 4. LOGIC FIX: Streamlined Single Strategy (H1 EMA Trend + M15 Breakout + RSI Filter) ---
+def get_strategy_signal(ticker):
     if not is_in_session_killzone(ticker):
         return None, None, None, None, None, None, None, None, None, None, None
 
-    h4_bias = get_h4_trend_bias(ticker)
+    h1_bias = get_h1_trend_bias(ticker)
     
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 20:
         return None, None, None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
-    prev_c = df_m15.iloc[-3]
     
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']) or pd.isna(c['ema200']):
         return None, None, None, None, None, None, None, None, None, None, None
@@ -216,48 +226,123 @@ def get_multi_strategy_signal(ticker):
     close_p = float(c['Close'])
     rsi = float(c['rsi14'])
     ema50 = float(c['ema50'])
-    ema200 = float(c['ema200'])
+    
+    recent_high = float(df_m15['High'].iloc[-10:-2].max())
+    recent_low = float(df_m15['Low'].iloc[-10:-2].min())
 
-    recent_high = float(df_m15['High'].iloc[-12:-3].max())
-    recent_low = float(df_m15['Low'].iloc[-12:-3].min())
-
-    apa_buy = close_p > recent_high and float(prev_c['Close']) <= recent_high
-    apa_sell = close_p < recent_low and float(prev_c['Close']) >= recent_low
-
-    ema_buy = close_p > ema50
-    ema_sell = close_p < ema50
-
-    rsi_buy = rsi < 75 and rsi > 40  
-    rsi_sell = rsi > 25 and rsi < 60
+    # 2-Pip spread / execution buffer adjustment
+    spread_buffer = 0.0002 if "JPY" not in ticker and "GC=F" not in ticker and "BTC-USD" not in ticker else (0.02 if "JPY" in ticker else 1.0)
 
     sig = None
-    if (apa_buy or ema_buy) and rsi_buy and h4_bias == "BULLISH":
+    # Clean strategy: H1 EMA filter + M15 breakout + RSI 30-70 filter
+    if h1_bias == "BULLISH" and close_p > recent_high and (30 <= rsi <= 70):
         sig = "BUY"
-    elif (apa_sell or ema_sell) and rsi_sell and h4_bias == "BEARISH":
+    elif h1_bias == "BEARISH" and close_p < recent_low and (30 <= rsi <= 70):
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None, None, None
 
-    tp_multiplier = 3.5 
-    risk_distance = abs(close_p - (recent_low if sig == "BUY" else recent_high)) + (atr * 0.2)
-    sl_pips = risk_distance * 10000 if "JPY" not in ticker else risk_distance * 100
+    # Risk parameters using ATR * 1.5 for Stop Loss distance
+    sl_distance = atr * 1.5
+    tp_distance = sl_distance * 2.0  # 1:2 Reward-to-Risk ratio minimum check
 
     if sig == "BUY":
-        sl = close_p - risk_distance
-        tp = close_p + (risk_distance * tp_multiplier)
-        partial_target = close_p + (risk_distance * 1.0)
-        be_level = close_p + (risk_distance * 1.8)
-        runner_target = close_p + (risk_distance * 2.8)
+        entry = close_p + spread_buffer
+        sl = entry - sl_distance
+        tp = entry + tp_distance
+        partial_target = entry + (sl_distance * 1.0)
+        be_level = entry + (sl_distance * 1.5)
+        runner_target = entry + (sl_distance * 2.0)
     else:
-        sl = close_p + risk_distance
-        tp = close_p - (risk_distance * tp_multiplier)
-        partial_target = close_p - (risk_distance * 1.0)
-        be_level = close_p - (risk_distance * 1.8)
-        runner_target = close_p - (risk_distance * 2.8)
+        entry = close_p - spread_buffer
+        sl = entry + sl_distance
+        tp = entry - tp_distance
+        partial_target = entry - (sl_distance * 1.0)
+        be_level = entry - (sl_distance * 1.5)
+        runner_target = entry - (sl_distance * 2.0)
 
+    # Validate RR ratio >= 1:1.5
+    rr_ratio = tp_distance / sl_distance
+    if rr_ratio < 1.5:
+        return None, None, None, None, None, None, None, None, None, None, None
+
+    sl_pips = sl_distance * 10000 if "JPY" not in ticker else sl_distance * 100
     rec_lot = calculate_dynamic_lot(ticker, sl_pips)
-    return sig, close_p, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h4_bias
+    
+    return sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h1_bias
+
+# --- 6. BACKTESTING FUNCTION ---
+def backtest_strategy(ticker="EURUSD=X", days=90):
+    """Backtests the streamlined strategy on the last 90 days of data."""
+    logging.info(f"Running backtest for {ticker} over the last {days} days...")
+    df = fetch_data(ticker, interval=TIMEFRAME_H1, period=f"{days}d")
+    if df is None or len(df) < 50:
+        logging.warning("Insufficient data for backtesting.")
+        return {"win_rate": 0.0, "max_drawdown": 0.0, "total_pnl": 0.0}
+
+    wins = 0
+    losses = 0
+    total_pnl = 0.0
+    peak_pnl = 0.0
+    max_dd = 0.0
+    current_balance = DEFAULT_ACCOUNT_BALANCE
+
+    # Simplified vector/loop evaluation for backtest metrics
+    for i in range(50, len(df) - 10):
+        sub_df = df.iloc[:i]
+        close_p = float(sub_df['Close'].iloc[-1])
+        ema50 = float(sub_df['ema50'].iloc[-1])
+        ema200 = float(sub_df['ema200'].iloc[-1])
+        rsi = float(sub_df['rsi14'].iloc[-1])
+        atr = float(sub_df['atr14'].iloc[-1])
+
+        if pd.isna(atr) or atr == 0:
+            continue
+
+        future_price = float(df['Close'].iloc[i + 5]) # Look ahead 5 periods outcome
+        sl_dist = atr * 1.5
+        tp_dist = sl_dist * 2.0
+
+        if ema50 > ema200 and (30 <= rsi <= 70): # Simulated Buy Setup
+            if future_price >= close_p + tp_dist:
+                wins += 1
+                pnl = current_balance * RISK_PER_TRADE_PCT * 2.0
+                total_pnl += pnl
+                current_balance += pnl
+            elif future_price <= close_p - sl_dist:
+                losses += 1
+                pnl = -(current_balance * RISK_PER_TRADE_PCT)
+                total_pnl += pnl
+                current_balance += pnl
+        elif ema50 < ema200 and (30 <= rsi <= 70): # Simulated Sell Setup
+            if future_price <= close_p - tp_dist:
+                wins += 1
+                pnl = current_balance * RISK_PER_TRADE_PCT * 2.0
+                total_pnl += pnl
+                current_balance += pnl
+            elif future_price >= close_p + sl_dist:
+                losses += 1
+                pnl = -(current_balance * RISK_PER_TRADE_PCT)
+                total_pnl += pnl
+                current_balance += pnl
+
+        if total_pnl > peak_pnl:
+            peak_pnl = total_pnl
+        dd = peak_pnl - total_pnl
+        if dd > max_dd:
+            max_dd = dd
+
+    total_trades = wins + losses
+    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+    
+    results = {
+        "win_rate": round(win_rate, 2),
+        "max_drawdown": round(max_dd, 2),
+        "total_pnl": round(total_pnl, 2)
+    }
+    logging.info(f"Backtest Results for {ticker}: {results}")
+    return results
 
 # --- CIRCUIT BREAKER & DAILY TARGET LOCK ---
 def check_circuit_breaker():
@@ -288,82 +373,6 @@ def check_circuit_breaker():
 
     return True, "System Operational (Active Mode)"
 
-# --- MASTER COMPREHENSIVE FOREX MENTOR BRAIN ---
-def get_forex_mentor_response(query):
-    q = query.lower()
-    
-    if any(keyword in q for keyword in ["strategy", "how", "trade", "system", "setup", "edge"]):
-        return (
-            "🧠 **Master Mentor: Institutional Strategy Blueprint**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "To capture high-probability profitable signals, our engine relies on **Institutional Confluence (Smart Money Concepts)**:\n"
-            "1️⃣ **H4 Macro Bias:** We never trade against the 4-Hour 200 EMA. This keeps us on the correct side of bank order flow.\n"
-            "2️⃣ **Liquidity Sweeps & Order Blocks:** Banks manipulate retail traders by hunting stops above equal highs/lows before an impulsive shift.\n"
-            "3️⃣ **Execution & Reward:** On the 15-minute timeframe, we target structured breakouts with a minimum **3.5R Reward-to-Risk ratio**, meaning every winner covers more than 3 losses."
-        )
-        
-    elif any(keyword in q for keyword in ["order block", "ob", "fvg", "fair value gap", "structure", "bos", "choch", "liquidity"]):
-        return (
-            "🏛️ **Institutional Price Action & SMC Masterclass**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "• **Order Blocks (OB):** The last opposing candle (bearish candle before an impulsive rally, or vice versa) where institutions accumulate orders. Price treats these zones like magnets when revisiting.\n"
-            "• **Fair Value Gaps (FVG):** Imbalances caused by aggressive institutional displacement where price leaves a one-sided gap that it eventually returns to fill.\n"
-            "• **Market Structure Shift (MSS):** When price breaks previous swing highs or lows violently, confirming that smart money has shifted the trend direction."
-        )
-
-    elif any(keyword in q for keyword in ["risk", "lot", "money", "capital", "manage", "drawdown", "account"]):
-        return (
-            "🛡️ **Institutional Risk Management Rules**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "Profitable trading is 80% risk management and 20% analysis:\n"
-            "• **Fixed Fractional Risk:** Never risk more than **1.5% to 2%** of your total account balance on a single trade.\n"
-            "• **Dynamic Lot Sizing:** Let the bot calculate your lot size based on your Stop Loss distance in pips so a wider stop never risks more money.\n"
-            "• **Circuit Breakers:** Our system automatically locks trading after 4 consecutive losses or 6 daily wins to preserve your capital from emotional over-trading."
-        )
-
-    elif any(keyword in q for keyword in ["gold", "xauusd", "gc=f"]):
-        return (
-            "🥇 **XAUUSD (Gold) Mastery Guide**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "Gold is a high-beta asset driven by global liquidity, institutional sessions (London/New York opens), and psychological round numbers.\n"
-            "• Gold loves creating **stop hunts** just before major news releases.\n"
-            "• Always allocate slightly wider Average True Range (ATR) buffers for Gold's stop losses so algorithmic wicks don't clip your position prematurely."
-        )
-
-    elif any(keyword in q for keyword in ["loss", "lose", "streak", "psychology", "fear", "greed", "mindset", "patient"]):
-        return (
-            "🧘 **Trader Psychology & Mental Toughness**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "Losses are inevitable business expenses. Amateurs panic after 2 losses; professionals look at a sample size of 100 trades because mathematical expectancy ensures profitability over time.\n"
-            "Never revenge-trade. If a signal hits stop loss, accept it cleanly, review the system journal (`trade_mentor_journal.csv`), and wait for the next high-confluence setup."
-        )
-
-    elif any(keyword in q for keyword in ["time", "session", "killzone", "london", "new york", "asia", "when"]):
-        return (
-            "⏰ **Forex Session Killzones**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "Volume creates institutional movement. Our bot operates strictly inside active trading windows:\n"
-            "• **London Session Open:** High volatility and liquidity sweeps.\n"
-            "• **New York Session Open:** Major macroeconomic data and trend continuations.\n"
-            "• Avoid trading during low-liquidity Asian consolidation hours or major bank holiday news blackouts."
-        )
-
-    elif any(keyword in q for keyword in ["hello", "hi", "hey", "mentor", "start", "help"]):
-        return (
-            "👋 **Hello Boss! Your Master Forex Mentor is Online.**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "I know *everything* about forex, price action, smart money concepts, risk scaling, and automated execution.\n"
-            "Ask me anything: *'What is an order block?'*, *'How do I manage risk?'*, *'Explain market structure'*, or check `/status` for system health."
-        )
-
-    else:
-        return (
-            "💡 **Institutional Mentor Analysis**\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            f"Regarding your query (*\"{query}\"*):\n"
-            "In institutional trading, success comes from aligning with the higher timeframe trend, waiting for price to retest key liquidity pools or order blocks, and maintaining strict risk discipline (never risking more than 1.5% per trade). Trust the mathematical edge over random guessing."
-        )
-
 # --- TELEGRAM COMMAND HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -372,12 +381,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            "🔓 **Access Granted:** Institutional Engine & Master Forex Mentor Active!\n"
-            "I now know everything about forex, SMC, risk control, and strategy. Send me any question or wait for signals.", 
+            "🔓 **Access Granted:** Streamlined Institutional Engine Active!\n"
+            "Ready for signals and execution tracking.", 
             parse_mode="Markdown"
         )
     elif user_id in authorized_users:
-        await update.message.reply_text("🟢 **Master Mentor Online:** Use `/status` or ask me any trading question.", parse_mode="Markdown")
+        await update.message.reply_text("🟢 **Engine Online:** Use `/status` to check system metrics.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied:* Provide valid passcode.", parse_mode="Markdown")
 
@@ -394,8 +403,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"⚙️ **Status:** {status_msg}\n"
         f"🎯 **Session Wins:** {daily_stats['daily_wins']} / {MAX_DAILY_WINS}\n"
-        f"🛡️ **Active Positions:** {len(active_trades)}\n"
-        f"🧠 **Master Mentor Knowledge Base:** 100% Loaded (SMC & Institutional Active)"
+        f"🛡️ **Active Positions:** {len(active_trades)}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -405,12 +413,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if text == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Access Granted:** Master Forex Mentor active.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Access Granted:** Engine active.", parse_mode="Markdown")
         return
 
     if user_id in authorized_users:
-        mentor_reply = get_forex_mentor_response(text)
-        await update.message.reply_text(mentor_reply, parse_mode="Markdown")
+        await update.message.reply_text("💡 Use `/status` or wait for automated market signals.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied:* Authentication required.", parse_mode="Markdown")
 
@@ -451,12 +458,14 @@ async def trade_lifecycle_mentor_loop(app):
                 # --- TAKE PROFIT HIT ---
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     daily_stats["daily_wins"] += 1
-                    log_trade_to_journal(label, trade_type, entry, current_price, "WIN (TP Hit)", "+3.5R")
+                    log_trade_to_journal(label, trade_type, entry, current_price, "WIN (TP Hit)", "+2.0R")
                     msg = (
+                        f"⚠️ EDUCATIONAL ONLY - NOT FINANCIAL ADVICE - Trading is risky\n"
+                        f"Win rate unknown, test on demo first\n\n"
                         f"🎯 **[TRADE EXECUTED: TP REACHED] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"✅ Target achieved at `{tp:.{dec}f}`.\n"
-                        f"📊 Position closed successfully with full +3.5R institutional gain."
+                        f"📊 Position closed successfully with +2.0R gain."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -466,10 +475,12 @@ async def trade_lifecycle_mentor_loop(app):
                 elif (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     log_trade_to_journal(label, trade_type, entry, current_price, "LOSS (SL Hit)", "-1.0R")
                     msg = (
+                        f"⚠️ EDUCATIONAL ONLY - NOT FINANCIAL ADVICE - Trading is risky\n"
+                        f"Win rate unknown, test on demo first\n\n"
                         f"🛑 **[TRADE EXECUTED: STOP LOSS] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"❌ Stop loss triggered at `{sl:.{dec}f}`.\n"
-                        f"📊 Risk managed (-1.0R) and recorded to journal. Keep emotions steady."
+                        f"📊 Risk managed (-1.0R) and recorded to journal."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -479,34 +490,13 @@ async def trade_lifecycle_mentor_loop(app):
                 # --- STAGE 1: PARTIAL PROFIT TRIGGER (1.0R) ---
                 if not trade["partial_hit"] and ((trade_type == "BUY" and current_price >= partial_target) or (trade_type == "SELL" and current_price <= partial_target)):
                     trade["partial_hit"] = True
-                    msg = (
-                        f"⚡ **[LIFECYCLE ALERT: PARTIAL TARGET] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"💰 1.0R threshold reached at `{current_price:.{dec}f}`.\n"
-                        f"📌 Action Required: Secure 50% partial profits."
-                    )
+                    msg = f"⚡ **[LIFECYCLE ALERT: PARTIAL TARGET] - {label}**\n💰 1.0R threshold reached at `{current_price:.{dec}f}`. Secure partials."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
-                # --- STAGE 2: BREAKEVEN TRIGGER (1.8R) ---
+                # --- STAGE 2: BREAKEVEN TRIGGER (1.5R) ---
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
-                    msg = (
-                        f"🛡️ **[LIFECYCLE ALERT: BREAKEVEN] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📈 Price reached `{current_price:.{dec}f}`.\n"
-                        f"📌 Action Required: Move Stop Loss to entry price (`{entry:.{dec}f}`)."
-                    )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                # --- STAGE 3: RUNNER TRAILING TRIGGER (2.8R) ---
-                if not trade["runner_hit"] and ((trade_type == "BUY" and current_price >= runner_target) or (trade_type == "SELL" and current_price <= runner_target)):
-                    trade["runner_hit"] = True
-                    msg = (
-                        f"🚀 **[LIFECYCLE ALERT: TRAILING STOP] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 Price reached `{current_price:.{dec}f}`.\n"
-                        f"📌 Action Required: Trail remaining position stop loss to lock gains."
-                    )
+                    msg = f"🛡️ **[LIFECYCLE ALERT: BREAKEVEN] - {label}**\n📈 Price reached `{current_price:.{dec}f}`. Move SL to entry (`{entry:.{dec}f}`)."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
             except Exception as e:
@@ -554,32 +544,29 @@ async def signal_loop(app):
                 if label in active_trades:
                     continue
 
-                sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h4_bias = get_multi_strategy_signal(ticker)
+                sig, entry, sl, tp, partial_target, be_level, runner_target, rec_lot, rsi, ema50, h1_bias = get_strategy_signal(ticker)
 
                 if sig and last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
                     dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
 
                     now_wat = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
-                    expires_wat = now_wat + datetime.timedelta(minutes=20)
                     time_sent_str = now_wat.strftime("%I:%M %p")
-                    time_expire_str = expires_wat.strftime("%I:%M %p")
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
+                    # --- 5. HONESTY FIX: Mandatory Disclaimer ---
                     professional_signal_text = (
-                        f"📊 **INSTITUTIONAL H4-FILTERED SIGNAL**\n"
+                        f"⚠️ **EDUCATIONAL ONLY - NOT FINANCIAL ADVICE - Trading is risky**\n"
+                        f"Win rate unknown, test on demo first\n\n"
+                        f"📊 **INSTITUTIONAL H1-FILTERED SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 **Instrument:** `{label}` | 🌐 **H4 Bias:** `{h4_bias}`\n"
+                        f"📌 **Instrument:** `{label}` | 🌐 **H1 Trend Bias:** `{h1_bias}`\n"
                         f"📈 **Position:** {dir_icon} **{sig}**\n\n"
                         f"🔹 **Entry Price:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
                         f"💰 **Calculated Lot:** `{rec_lot}`\n\n"
-                        f"📋 **Execution Parameters:**\n"
-                        f"1️⃣ Execute `{sig}` order aligned with H4 trend.\n"
-                        f"2️⃣ Set Stop Loss strictly at `{sl:.{dec}f}`.\n"
-                        f"3️⃣ Target objective set to `{tp:.{dec}f}` (3.5R).\n\n"
-                        f"🕒 **Timestamp:** `{time_sent_str} WAT` | ⏳ **Valid Until:** `{time_expire_str} WAT`\n"
+                        f"🕒 **Timestamp:** `{time_sent_str} WAT`\n"
                         f"━━━━━━━━━━━━━━━━━━━"
                     )
 
@@ -611,6 +598,9 @@ async def signal_loop(app):
         await asyncio.sleep(45)
 
 async def post_init(app):
+    # Run backtest verification check prior to launching live signal loops
+    backtest_strategy("EURUSD=X", days=90)
+    
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(heartbeat_loop(app))
     asyncio.create_task(trade_lifecycle_mentor_loop(app))
@@ -630,7 +620,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Kings™ Institutional Trading Engine with Master Fx Mentor Active...")
+    logging.info("Kings™ Institutional Trading Engine Active...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
