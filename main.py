@@ -55,6 +55,10 @@ last_signals = {}
 authorized_users = set()
 active_trades = {}  # Tracks ongoing trades for live management
 
+# --- CIRCUIT BREAKER STATE ---
+daily_loss_counter = 0
+last_trade_reset_date = datetime.datetime.now(datetime.timezone.utc).date()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- FLASK WEB SERVER (24/7 Live Status) ---
@@ -139,8 +143,20 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-TIMEFRAME QUALITY STRATEGY ---
+# --- MULTI-TIMEFRAME QUALITY STRATEGY (OPTIMIZED FOR FREQUENCY & QUALITY) ---
 def get_strategy_signal(ticker):
+    global daily_loss_counter, last_trade_reset_date
+    
+    # Reset daily circuit breaker if a new day starts
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    if current_date != last_trade_reset_date:
+        daily_loss_counter = 0
+        last_trade_reset_date = current_date
+
+    # Circuit Breaker: Stop trading for the day if 3 consecutive losses hit
+    if daily_loss_counter >= 3:
+        return None, None, None, None, None, None, None, None, None
+
     h1_bias = get_h1_trend_bias(ticker)
     
     df_m5 = fetch_data(ticker, interval=TIMEFRAME_M5, period="2d")
@@ -161,9 +177,10 @@ def get_strategy_signal(ticker):
     spread_buffer = 0.0002 if "JPY" not in ticker and "GC=F" not in ticker and "BTC-USD" not in ticker else (0.02 if "JPY" in ticker else 1.0)
 
     sig = None
-    if h1_bias == "BULLISH" and close_p > recent_high and (42 <= rsi <= 68):
+    # Optimized RSI thresholds for better frequency while maintaining quality trend alignment
+    if h1_bias == "BULLISH" and close_p > recent_high and (40 <= rsi <= 70):
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p < recent_low and (32 <= rsi <= 58):
+    elif h1_bias == "BEARISH" and close_p < recent_low and (30 <= rsi <= 60):
         sig = "SELL"
 
     if not sig:
@@ -174,7 +191,7 @@ def get_strategy_signal(ticker):
     min_broker_dist = 4.00 if ticker == "GC=F" else (0.0020 if "JPY" not in ticker and "BTC-USD" not in ticker else (0.20 if "JPY" in ticker else 30.0))
     
     sl_distance = max(atr * 1.5, min_broker_dist)
-    tp_distance = sl_distance * 2.0
+    tp_distance = sl_distance * 2.0  # Healthy 1:2 Risk-to-Reward Ratio
 
     if sig == "BUY":
         entry = live_price + spread_buffer
@@ -209,7 +226,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not active_trades:
-        await update.message.reply_text("📊 **Active Positions Status:** No active trades running right now. Scanning 24/7 for high-probability setups[cite: 14].", parse_mode="Markdown")
+        await update.message.reply_text("📊 **Active Positions Status:** No active trades running right now. Scanning 24/7 for high-probability setups.", parse_mode="Markdown")
         return
     
     msg = f"📊 **Active Portfolio Command Center ({len(active_trades)}/3 Trades):**\n━━━━━━━━━━━━━━━━━━━\n"
@@ -227,7 +244,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif trade['be_hit']:
             status_desc = "🛡️ Breakeven Secure"
         else:
-            status_desc = "⚔️ Fighting for Target"
+            status_desc = "⚔️️ Fighting for Target"
             
         msg += (
             f"📌 **{label}** ({trade['type']})\n"
@@ -243,7 +260,7 @@ async def hourly_status_loop(app):
         await asyncio.sleep(14400)
         if authorized_users:
             target_user = list(authorized_users)[0]
-            msg = "🟢 **[SYSTEM HEALTH CHECK]** Bot is fully operational, defending capital, and scanning markets 24/7[cite: 14]. 🚀"
+            msg = "🟢 **[SYSTEM HEALTH CHECK]** Bot is fully operational, defending capital, and scanning markets 24/7. 🚀"
             try:
                 await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
             except Exception as e:
@@ -251,7 +268,7 @@ async def hourly_status_loop(app):
 
 # --- REAL-TIME LIVE CHART GUIDANCE LOOP (FIGHTING FOR WINS) ---
 async def live_chart_guidance_loop(app):
-    global active_trades
+    global active_trades, daily_loss_counter
     while True:
         await asyncio.sleep(15)
         if not active_trades:
@@ -289,6 +306,7 @@ async def live_chart_guidance_loop(app):
 
                 # 2. Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
+                    daily_loss_counter += 1
                     msg = (
                         f"🛑 **[STOP LOSS HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
@@ -300,12 +318,11 @@ async def live_chart_guidance_loop(app):
                     continue
 
                 # 3. Emergency Reversal Warning (Close Trade Early)
-                # If momentum reverses aggressively against us (e.g. RSI blows past overbought/oversold against the trade)
                 if not trade.get("reversal_alerted", False):
                     if (trade_type == "BUY" and current_rsi > 78) or (trade_type == "SELL" and current_rsi < 22):
                         trade["reversal_alerted"] = True
                         msg = (
-                            f"⚠️ **[URGENT GUIDANCE: CONSIDER CLOSING NOW] - {label}**\n"
+                            f"⚠️️ **[URGENT GUIDANCE: CONSIDER CLOSING NOW] - {label}**\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📊 **Reason:** Momentum exhaustion detected. RSI spiked to `{current_rsi:.1f}`, signaling a strong potential trend reversal against our position.\n"
                             f"👉 **Action:** Lock current profits or exit manually right now (`{current_price:.{dec}f}`) to defend capital from a sudden snapback!"
