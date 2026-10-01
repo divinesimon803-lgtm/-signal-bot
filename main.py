@@ -145,7 +145,6 @@ def get_h1_trend_bias(ticker):
 
 # --- SPECIALIZED STRICT GOLD STRATEGY (XAUUSD) ---
 def get_gold_strategy_signal(ticker):
-    # SESSION FILTER: Block Gold trades during low-liquidity / Asian choppy hours (22:00 to 07:00 UTC)
     now = datetime.datetime.now(datetime.timezone.utc)
     if 22 <= now.hour or now.hour < 7:
         return None, None, None, None, None, None, None, None, None
@@ -164,7 +163,6 @@ def get_gold_strategy_signal(ticker):
     ema50 = float(c['ema50'])
 
     sig = None
-    # Strict Gold Pullback / Momentum Filter: Avoids blind breakout wicks
     if close_p > ema50 and (48 <= rsi <= 68):
         sig = "BUY"
     elif close_p < ema50 and (32 <= rsi <= 52):
@@ -174,11 +172,10 @@ def get_gold_strategy_signal(ticker):
         return None, None, None, None, None, None, None, None, None
 
     live_price = float(df_m5['Close'].iloc[-1])
-    spread_buffer = 1.0  # Gold spread buffer
+    spread_buffer = 1.0 
     
-    # GOLD CAPITAL PROTECTION: Enforced minimum 20 points ($2.00) buffer to clear broker SL rules
     sl_distance = max(atr * 2.5, 20.00)
-    tp_distance = sl_distance * 2.0  # 1:2 Risk-to-Reward
+    tp_distance = sl_distance * 2.0 
 
     if sig == "BUY":
         entry = live_price + spread_buffer
@@ -193,12 +190,12 @@ def get_gold_strategy_signal(ticker):
         partial_target = entry - (sl_distance * 1.0)
         be_level = entry - (sl_distance * 1.2)
 
-    sl_pips = sl_distance * 1.0  # Gold pip calculation scale
+    sl_pips = sl_distance * 1.0 
     rec_lot = calculate_dynamic_lot(ticker, sl_pips)
     
     return sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, "GOLD-STRICT"
 
-# --- STANDARD MULTI-TIMEFRAME QUALITY STRATEGY (For Currencies & Crypto) ---
+# --- STANDARD MULTI-TIMEFRAME QUALITY STRATEGY ---
 def get_strategy_signal(ticker):
     global daily_loss_counter, last_trade_reset_date
     
@@ -210,7 +207,6 @@ def get_strategy_signal(ticker):
     if daily_loss_counter >= 3:
         return None, None, None, None, None, None, None, None, None
 
-    # Route Gold directly to its own specialized institutional defense function
     if ticker == "GC=F":
         return get_gold_strategy_signal(ticker)
 
@@ -422,7 +418,6 @@ async def signal_loop(app):
                 await asyncio.sleep(300)
                 continue
 
-            # STRICT PORTFOLIO CAP: Maximum 2 concurrent trades/signals allowed at once
             if len(active_trades) >= 2:
                 await asyncio.sleep(60)
                 continue
