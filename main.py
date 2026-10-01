@@ -20,7 +20,7 @@ from metaapi_cloud_sdk import MetaApi
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BOT_PASSCODE = os.getenv("BOT_PASSCODE")
-META_API_TOKEN = os.getenv("META_API_TOKEN") # Master API token for MetaApi
+META_API_TOKEN = os.getenv("META_API_TOKEN")
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE or not META_API_TOKEN:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
@@ -55,9 +55,11 @@ active_trades = {}
 
 # --- BROKER & AUTO-TRADING STATE CONFIG ---
 bot_config = {
-    "account_id": os.getenv("DEFAULT_MT5_ACCOUNT_ID", ""), # Can be changed via Telegram
-    "auto_execute": False,  # Toggle ON/OFF via Telegram
-    "mode": "DEMO"          # DEMO or LIVE tracker
+    "broker": "",
+    "server": "",
+    "login": "",
+    "account_id": os.getenv("DEFAULT_MT5_ACCOUNT_ID", ""), 
+    "auto_execute": False,  
 }
 
 # --- CIRCUIT BREAKER STATE ---
@@ -95,7 +97,6 @@ async def execute_broker_order(symbol, action, volume, sl, tp):
             await connection.connect()
             await connection.wait_synchronized()
 
-        # Map Yahoo tickers to standard broker symbol formats if needed
         broker_symbol = symbol
         if symbol == "GC=F":
             broker_symbol = "XAUUSD"
@@ -295,7 +296,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "🔓 **Master Trading Engine Ready.**\n\n"
             "• Use `/autotrade on` or `/autotrade off` to toggle execution.\n"
-            "• Use `/setaccount <MetaApi_Account_ID>` to switch accounts.\n"
+            "• Use `/newaccount broker-server-loginid` to switch your active account details.\n"
             "• Use `/status` to view active trades and broker connection status.",
             parse_mode="Markdown"
         )
@@ -321,29 +322,43 @@ async def autotrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Usage: `/autotrade on` or `/autotrade off`", parse_mode="Markdown")
 
-async def setaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def newaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     args = context.args
     if not args:
-        await update.message.reply_text(f"📌 Current MetaApi Account ID: `{bot_config['account_id'] or 'Not Set'}`\nUsage: `/setaccount YOUR_ACCOUNT_ID`", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"📌 Current Config:\n"
+            f"• Broker/Server/Login: `{bot_config['broker'] or 'Not Set'}`\n"
+            f"• MetaApi ID: `{bot_config['account_id'] or 'Not Set'}`\n\n"
+            f"Usage: `/newaccount broker-server-loginid`",
+            parse_mode="Markdown"
+        )
         return
     
-    bot_config["account_id"] = args[0]
-    await update.message.reply_text(f"✅ **Broker Account ID Updated Successfully!**\nTarget Account: `{bot_config['account_id']}`", parse_mode="Markdown")
+    input_str = args[0]
+    bot_config["broker"] = input_str
+    # You can map parts of this string or treat it as your unique account reference string
+    bot_config["account_id"] = input_str 
+
+    await update.message.reply_text(
+        f"✅ **Account Configuration Updated Successfully!**\n"
+        f"Target: `{input_str}`",
+        parse_mode="Markdown"
+    )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
     auto_status = "ON 🟢" if bot_config["auto_execute"] else "OFF 🔴"
-    acc_id = bot_config["account_id"] or "Not Configured"
+    acc_info = bot_config["broker"] or bot_config["account_id"] or "Not Configured"
     
     msg = (
         f"📊 **Engine & Broker Command Center:**\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"• Auto-Execution: **{auto_status}**\n"
-        f"• MetaApi Account ID: `{acc_id}`\n"
+        f"• Active Account: `{acc_info}`\n"
         f"• Active Trades: **{len(active_trades)}/2 Max**\n\n"
     )
     
@@ -382,7 +397,6 @@ async def signal_loop(app):
                     dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
-                    # Attempt automated broker execution if enabled
                     exec_success, exec_msg = await execute_broker_order(ticker, sig, rec_lot, sl, tp)
                     exec_status_text = "🚀 **Auto-Executed on MT5!**" if exec_success else f"⚠️ *Execution skipped/failed:* {exec_msg}"
 
@@ -430,7 +444,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("autotrade", autotrade_command))
-    app.add_handler(CommandHandler("setaccount", setaccount_command))
+    app.add_handler(CommandHandler("newaccount", newaccount_command))
     app.add_handler(CommandHandler("status", status_command))
 
     flask_thread = Thread(target=run_flask, daemon=True)
