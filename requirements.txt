@@ -3,4 +3,4 @@ yfinance
 pandas
 ta
 python-telegram-bot
-metaapi-cloud-sdk
+httpx
