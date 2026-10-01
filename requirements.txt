@@ -1,5 +1,7 @@
 Flask
 python-telegram-bot
-MetaTrader5
 requests
 python-dotenv
+pandas
+ta
+yfinance
