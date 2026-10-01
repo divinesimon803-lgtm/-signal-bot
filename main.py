@@ -244,7 +244,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif trade['be_hit']:
             status_desc = "🛡️ Breakeven Secure"
         else:
-            status_desc = "⚔️️ Fighting for Target"
+            status_desc = "⚔ Fighting for Target"
             
         msg += (
             f"📌 **{label}** ({trade['type']})\n"
@@ -322,7 +322,7 @@ async def live_chart_guidance_loop(app):
                     if (trade_type == "BUY" and current_rsi > 78) or (trade_type == "SELL" and current_rsi < 22):
                         trade["reversal_alerted"] = True
                         msg = (
-                            f"⚠️️ **[URGENT GUIDANCE: CONSIDER CLOSING NOW] - {label}**\n"
+                            f"⚠ **[URGENT GUIDANCE: CONSIDER CLOSING NOW] - {label}**\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📊 **Reason:** Momentum exhaustion detected. RSI spiked to `{current_rsi:.1f}`, signaling a strong potential trend reversal against our position.\n"
                             f"👉 **Action:** Lock current profits or exit manually right now (`{current_price:.{dec}f}`) to defend capital from a sudden snapback!"
@@ -431,7 +431,9 @@ def main():
     asyncio.set_event_loop(loop)
 
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).build()
+    
+    # Updated with drop_pending_updates=True to clear lingering polling sessions cleanly
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("status", status_command))
