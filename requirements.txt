@@ -1,8 +1,6 @@
-Flask
-python-telegram-bot
-aiohttp
-requests
-python-dotenv
+flask
+yfinance
 pandas
 ta
-yfinance
+python-telegram-bot
+metaapi-cloud-sdk
