@@ -176,8 +176,8 @@ def get_gold_strategy_signal(ticker):
     live_price = float(df_m5['Close'].iloc[-1])
     spread_buffer = 1.0  # Gold spread buffer
     
-    # GOLD CAPITAL PROTECTION: Wider Stop Loss (2.5x ATR) to avoid noise wicks
-    sl_distance = max(atr * 2.5, 8.00)
+    # GOLD CAPITAL PROTECTION: Enforced minimum 20 points ($2.00) buffer to clear broker SL rules
+    sl_distance = max(atr * 2.5, 20.00)
     tp_distance = sl_distance * 2.0  # 1:2 Risk-to-Reward
 
     if sig == "BUY":
