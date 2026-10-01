@@ -2,8 +2,6 @@ import asyncio
 import datetime
 import logging
 import os
-import time
-import aiohttp
 import pandas as pd
 import ta
 import yfinance as yf
@@ -14,17 +12,17 @@ from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
-    filters,
     ContextTypes,
 )
+from metaapi_cloud_sdk import MetaApi
 
 # --- CONFIGURATION & SECURITY ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BOT_PASSCODE = os.getenv("BOT_PASSCODE")
+META_API_TOKEN = os.getenv("META_API_TOKEN") # Master API token for MetaApi
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE or not META_API_TOKEN:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
 RISK_PER_TRADE_PCT = 0.015  # 1.5% risk profile
@@ -53,7 +51,14 @@ TIMEFRAME_H1 = "1h"
 
 last_signals = {}
 authorized_users = set()
-active_trades = {}  # Tracks ongoing trades for live management
+active_trades = {}  
+
+# --- BROKER & AUTO-TRADING STATE CONFIG ---
+bot_config = {
+    "account_id": os.getenv("DEFAULT_MT5_ACCOUNT_ID", ""), # Can be changed via Telegram
+    "auto_execute": False,  # Toggle ON/OFF via Telegram
+    "mode": "DEMO"          # DEMO or LIVE tracker
+}
 
 # --- CIRCUIT BREAKER STATE ---
 daily_loss_counter = 0
@@ -66,23 +71,48 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Strict Institutional 24/7 Multi-Timeframe Trading Engine with Specialized Gold Rules is Live."
+    return "Automated MT5 Execution & Telegram Control Engine is Live 24/7."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- AUTOMATED HIGH-IMPACT NEWS FILTER ---
-def is_high_impact_news_time():
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if now.weekday() == 4 and now.day <= 7:
-        if 12 <= now.hour <= 15:
-            return True, "US Non-Farm Payrolls (NFP) High-Volatility Window"
-    if now.weekday() in [2, 3] and now.hour == 13 and 20 <= now.minute <= 45:
-        return True, "Major Economic Data Release Window"
-    return False, ""
+# --- DIRECT METAAPI EXECUTION BRIDGE ---
+async def execute_broker_order(symbol, action, volume, sl, tp):
+    if not bot_config["auto_execute"] or not bot_config["account_id"]:
+        logging.info("Auto-execution is OFF or Account ID not set. Skipping live broker order.")
+        return False, "Auto-execution disabled or missing account."
 
-# --- DYNAMIC LOT SIZING ---
+    try:
+        api = MetaApi(META_API_TOKEN)
+        account = await api.metatrader_account_api.get_account(bot_config["account_id"])
+        
+        if account.state != 'DEPLOYED':
+            await account.deploy()
+            
+        connection = account.get_rpc_connection()
+        if not connection.synchronized:
+            await connection.connect()
+            await connection.wait_synchronized()
+
+        # Map Yahoo tickers to standard broker symbol formats if needed
+        broker_symbol = symbol
+        if symbol == "GC=F":
+            broker_symbol = "XAUUSD"
+
+        if action.upper() == "BUY":
+            result = await connection.create_market_buy_order(broker_symbol, volume, sl, tp)
+            logging.info(f"METAAPI SUCCESS BUY: {result}")
+        elif action.upper() == "SELL":
+            result = await connection.create_market_sell_order(broker_symbol, volume, sl, tp)
+            logging.info(f"METAAPI SUCCESS SELL: {result}")
+            
+        return True, "Order executed successfully on MT5."
+    except Exception as e:
+        logging.error(f"MetaApi Execution Error: {e}")
+        return False, str(e)
+
+# --- DYNAMIC LOT SIZING & DATA FETCHER ---
 def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALANCE):
     risk_amount = account_balance * RISK_PER_TRADE_PCT
     pip_value = 10.0
@@ -97,7 +127,6 @@ def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALAN
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
     return max(0.01, min(calculated_lot, 0.05 if account_balance < 500.0 else 3.0))
 
-# --- DATA FETCHER ---
 def fetch_data(ticker, interval, period="5d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
@@ -143,7 +172,6 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- SPECIALIZED STRICT GOLD STRATEGY (XAUUSD) ---
 def get_gold_strategy_signal(ticker):
     now = datetime.datetime.now(datetime.timezone.utc)
     if 22 <= now.hour or now.hour < 7:
@@ -173,7 +201,6 @@ def get_gold_strategy_signal(ticker):
 
     live_price = float(df_m5['Close'].iloc[-1])
     spread_buffer = 1.0 
-    
     sl_distance = max(atr * 2.5, 20.00)
     tp_distance = sl_distance * 2.0 
 
@@ -195,10 +222,8 @@ def get_gold_strategy_signal(ticker):
     
     return sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, "GOLD-STRICT"
 
-# --- STANDARD MULTI-TIMEFRAME QUALITY STRATEGY ---
 def get_strategy_signal(ticker):
     global daily_loss_counter, last_trade_reset_date
-    
     current_date = datetime.datetime.now(datetime.timezone.utc).date()
     if current_date != last_trade_reset_date:
         daily_loss_counter = 0
@@ -211,7 +236,6 @@ def get_strategy_signal(ticker):
         return get_gold_strategy_signal(ticker)
 
     h1_bias = get_h1_trend_bias(ticker)
-    
     df_m5 = fetch_data(ticker, interval=TIMEFRAME_M5, period="2d")
     if df_m5 is None or len(df_m5) < 30:
         return None, None, None, None, None, None, None, None, None
@@ -262,162 +286,80 @@ def get_strategy_signal(ticker):
     
     return sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, h1_bias
 
-# --- TELEGRAM COMMANDS ---
+# --- TELEGRAM INTERACTIVE COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Master Bot Ready.** Specialized Gold strategy + Max 2 concurrent trades enforced.", parse_mode="Markdown")
+        await update.message.reply_text(
+            "🔓 **Master Trading Engine Ready.**\n\n"
+            "• Use `/autotrade on` or `/autotrade off` to toggle execution.\n"
+            "• Use `/setaccount <MetaApi_Account_ID>` to switch accounts.\n"
+            "• Use `/status` to view active trades and broker connection status.",
+            parse_mode="Markdown"
+        )
     else:
-        await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
+        await update.message.reply_text("🔒 *Access Denied. Invalid Passcode.*", parse_mode="Markdown")
+
+async def autotrade_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in authorized_users:
+        return
+    args = context.args
+    if not args:
+        status_str = "ON 🟢" if bot_config["auto_execute"] else "OFF 🔴"
+        await update.message.reply_text(f"⚙️ Current Auto-Trade Status: **{status_str}**\nUse `/autotrade on` or `/autotrade off` to switch.", parse_mode="Markdown")
+        return
+    
+    cmd = args[0].lower()
+    if cmd == "on":
+        bot_config["auto_execute"] = True
+        await update.message.reply_text("🟢 **Auto-Execution ACTIVATED.** Trades will now fire directly to MT5 automatically!", parse_mode="Markdown")
+    elif cmd == "off":
+        bot_config["auto_execute"] = False
+        await update.message.reply_text("🔴 **Auto-Execution DEACTIVATED.** Bot is now in Signal-Only mode.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("Usage: `/autotrade on` or `/autotrade off`", parse_mode="Markdown")
+
+async def setaccount_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in authorized_users:
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text(f"📌 Current MetaApi Account ID: `{bot_config['account_id'] or 'Not Set'}`\nUsage: `/setaccount YOUR_ACCOUNT_ID`", parse_mode="Markdown")
+        return
+    
+    bot_config["account_id"] = args[0]
+    await update.message.reply_text(f"✅ **Broker Account ID Updated Successfully!**\nTarget Account: `{bot_config['account_id']}`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    if not active_trades:
-        await update.message.reply_text("📊 **Active Positions Status:** No active trades running right now. Scanning markets 24/7.", parse_mode="Markdown")
-        return
+    auto_status = "ON 🟢" if bot_config["auto_execute"] else "OFF 🔴"
+    acc_id = bot_config["account_id"] or "Not Configured"
     
-    msg = f"📊 **Active Portfolio Command Center ({len(active_trades)}/2 Trades Max):**\n━━━━━━━━━━━━━━━━━━━\n"
-    for label, trade in active_trades.items():
-        y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), "BTC-USD")
-        df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M5, period="1d")
-        current_price = float(df_temp['Close'].iloc[-1]) if df_temp is not None and not df_temp.empty else trade['entry']
-        dec = 3 if "JPY" in y_ticker else (2 if y_ticker in ["BTC-USD", "GC=F"] else 4)
-        
-        pips_away_tp = abs(trade['tp'] - current_price) * (10000 if "JPY" not in y_ticker else 100)
-        pips_away_sl = abs(current_price - trade['sl']) * (10000 if "JPY" not in y_ticker else 100)
-        
-        if trade.get('profit_locked', False):
-            status_desc = "💰 Profit Locked / Trailing"
-        elif trade['be_hit']:
-            status_desc = "🛡️ Breakeven Secure"
-        else:
-            status_desc = "⚔ Fighting for Target"
+    msg = (
+        f"📊 **Engine & Broker Command Center:**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"• Auto-Execution: **{auto_status}**\n"
+        f"• MetaApi Account ID: `{acc_id}`\n"
+        f"• Active Trades: **{len(active_trades)}/2 Max**\n\n"
+    )
+    
+    if not active_trades:
+        msg += "No open positions right now. Scanning markets..."
+    else:
+        for label, trade in active_trades.items():
+            msg += f"📌 **{label}** ({trade['type']}) | Lot: `{trade['lot']}`\n"
             
-        msg += (
-            f"📌 **{label}** ({trade['type']})\n"
-            f"• Entry: `{trade['entry']:.{dec}f}` | Live: `{current_price:.{dec}f}`\n"
-            f"• State: *{status_desc}*\n"
-            f"• Distance to TP: `{pips_away_tp:.1f} pips` | SL Dist: `{pips_away_sl:.1f} pips`\n\n"
-        )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- HEALTH PING LOOP ---
-async def hourly_status_loop(app):
-    while True:
-        await asyncio.sleep(14400)
-        if authorized_users:
-            target_user = list(authorized_users)[0]
-            msg = "🟢 **[SYSTEM HEALTH CHECK]** Bot is fully operational, defending capital, and scanning markets 24/7. 🚀"
-            try:
-                await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"Health check ping error: {e}")
-
-# --- REAL-TIME LIVE CHART GUIDANCE LOOP ---
-async def live_chart_guidance_loop(app):
-    global active_trades, daily_loss_counter
-    while True:
-        await asyncio.sleep(15)
-        if not active_trades:
-            continue
-
-        target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-
-        for label, trade in list(active_trades.items()):
-            try:
-                y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), "BTC-USD")
-                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M5, period="1d")
-                if df_live is None or len(df_live) < 10:
-                    continue
-
-                current_price = float(df_live['Close'].iloc[-1])
-                current_rsi = float(df_live['rsi14'].iloc[-1])
-                trade_type = trade["type"]
-                entry = trade["entry"]
-                sl = trade["sl"]
-                tp = trade["tp"]
-                be_level = trade["be_level"]
-                dec = 3 if "JPY" in y_ticker else (2 if y_ticker in ["BTC-USD", "GC=F"] else 4)
-
-                # 1. Take Profit Hit
-                if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = (
-                        f"🎯 **[MISSION ACCOMPLISHED: TARGET HIT] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Price crushed Take Profit at `{tp:.{dec}f}`.\n\n"
-                        f"🏆 *Trader Intel:* Capital secured. Slot freed up for the next high-conviction setup! 🚀📈"
-                    )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                    active_trades.pop(label, None)
-                    continue
-
-                # 2. Stop Loss Hit
-                if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    daily_loss_counter += 1
-                    msg = (
-                        f"🛑 **[STOP LOSS HIT] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Price crossed strict defense line at `{sl:.{dec}f}`.\n\n"
-                        f"🛡️ *Mindset:* Risk isolated. Slot freed up. Resetting focus for the next secure signal."
-                    )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                    active_trades.pop(label, None)
-                    continue
-
-                # 3. Emergency Reversal Warning
-                if not trade.get("reversal_alerted", False):
-                    if (trade_type == "BUY" and current_rsi > 78) or (trade_type == "SELL" and current_rsi < 22):
-                        trade["reversal_alerted"] = True
-                        msg = (
-                            f"⚠ **[URGENT GUIDANCE: CONSIDER CLOSING NOW] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 **Reason:** Momentum exhaustion detected. RSI spiked to `{current_rsi:.1f}`, signaling a strong potential trend reversal against our position.\n"
-                            f"👉 **Action:** Lock current profits or exit manually right now (`{current_price:.{dec}f}`) to defend capital from a sudden snapback!"
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                # 4. Breakeven Trigger
-                if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
-                    trade["be_hit"] = True
-                    msg = (
-                        f"🛡️ **[TACTICAL GUIDANCE: MODIFY SL TO ENTRY] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📈 **Reason:** Price progressed favorably to `{current_price:.{dec}f}`.\n"
-                        f"👉 **Action:** Move your Stop Loss to Entry (`{entry:.{dec}f}`). This trade is now completely **risk-free**. Let the remainder run to target!"
-                    )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                # 5. Advanced Profit Lock
-                distance_total = abs(tp - entry)
-                distance_covered = abs(current_price - entry)
-                if trade["be_hit"] and not trade.get("profit_locked", False) and distance_covered >= (distance_total * 0.75):
-                    trade["profit_locked"] = True
-                    secure_lock_price = entry + (distance_total * 0.5) if trade_type == "BUY" else entry - (distance_total * 0.5)
-                    msg = (
-                        f"💰 **[AGGRESSIVE DEFENSE: LOCK 50% GAINS] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📈 **Reason:** We are 75% of the way to full Take Profit (`{current_price:.{dec}f}`).\n"
-                        f"👉 **Action:** Trail your Stop Loss up to `{secure_lock_price:.{dec}f}` to lock in solid profits while fighting for the final push to TP!"
-                    )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-            except Exception as e:
-                logging.error(f"Guidance loop error for {label}: {e}")
-
-# --- SIGNAL SCANNER LOOP ---
+# --- SIGNAL & AUTO-EXECUTION SCANNER LOOP ---
 async def signal_loop(app):
     global last_signals, active_trades
     while True:
         try:
-            is_news, news_reason = is_high_impact_news_time()
-            if is_news:
-                await asyncio.sleep(300)
-                continue
-
             if len(active_trades) >= 2:
                 await asyncio.sleep(60)
                 continue
@@ -428,12 +370,10 @@ async def signal_loop(app):
             for ticker, label in active_assets.items():
                 if label in active_trades:
                     continue
-
                 if len(active_trades) >= 2:
                     break
 
                 sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, h1_bias = get_strategy_signal(ticker)
-
                 if sig is None:
                     continue
 
@@ -442,8 +382,12 @@ async def signal_loop(app):
                     dec = 3 if "JPY" in ticker else (2 if ticker in ["BTC-USD", "GC=F"] else 4)
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
+                    # Attempt automated broker execution if enabled
+                    exec_success, exec_msg = await execute_broker_order(ticker, sig, rec_lot, sl, tp)
+                    exec_status_text = "🚀 **Auto-Executed on MT5!**" if exec_success else f"⚠️ *Execution skipped/failed:* {exec_msg}"
+
                     signal_text = (
-                        f"🚨 **QUALITY SIGNAL ({len(active_trades) + 1}/2 Active)**\n"
+                        f"🚨 **SIGNAL & AUTO-EXECUTION REPORT**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** `{label}` | **Mode:** `{h1_bias}`\n"
                         f"📈 **Direction:** {dir_icon} **{sig}**\n\n"
@@ -452,7 +396,7 @@ async def signal_loop(app):
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
                         f"⚖ **Lot Size:** `{rec_lot}`\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"💡 *Strict Risk Control: Max 2 trades active.*"
+                        f"{exec_status_text}"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -463,21 +407,18 @@ async def signal_loop(app):
                         "entry": entry,
                         "sl": sl,
                         "tp": tp,
-                        "partial_target": partial_target,
+                        "lot": rec_lot,
                         "be_level": be_level,
                         "be_hit": False,
-                        "profit_locked": False,
-                        "reversal_alerted": False
+                        "profit_locked": False
                     }
         except Exception as e:
-            logging.error(f"Signal loop error: {e}")
+            logging.error(f"Signal loop execution error: {e}")
 
         await asyncio.sleep(30)
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
-    asyncio.create_task(live_chart_guidance_loop(app))
-    asyncio.create_task(hourly_status_loop(app))
 
 # --- MAIN ENTRY ---
 def main():
@@ -485,16 +426,17 @@ def main():
     asyncio.set_event_loop(loop)
 
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
-    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("autotrade", autotrade_command))
+    app.add_handler(CommandHandler("setaccount", setaccount_command))
     app.add_handler(CommandHandler("status", status_command))
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("5M Intraday Trading Engine Running 24/7...")
+    logging.info("Fully Automated MT5 Telegram Trading Engine Initialized...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
