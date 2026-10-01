@@ -143,17 +143,15 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- MULTI-TIMEFRAME QUALITY STRATEGY (OPTIMIZED FOR FREQUENCY & QUALITY) ---
+# --- MULTI-TIMEFRAME QUALITY STRATEGY ---
 def get_strategy_signal(ticker):
     global daily_loss_counter, last_trade_reset_date
     
-    # Reset daily circuit breaker if a new day starts
     current_date = datetime.datetime.now(datetime.timezone.utc).date()
     if current_date != last_trade_reset_date:
         daily_loss_counter = 0
         last_trade_reset_date = current_date
 
-    # Circuit Breaker: Stop trading for the day if 3 consecutive losses hit
     if daily_loss_counter >= 3:
         return None, None, None, None, None, None, None, None, None
 
@@ -177,7 +175,6 @@ def get_strategy_signal(ticker):
     spread_buffer = 0.0002 if "JPY" not in ticker and "GC=F" not in ticker and "BTC-USD" not in ticker else (0.02 if "JPY" in ticker else 1.0)
 
     sig = None
-    # Optimized RSI thresholds for better frequency while maintaining quality trend alignment
     if h1_bias == "BULLISH" and close_p > recent_high and (40 <= rsi <= 70):
         sig = "BUY"
     elif h1_bias == "BEARISH" and close_p < recent_low and (30 <= rsi <= 60):
@@ -188,7 +185,8 @@ def get_strategy_signal(ticker):
 
     live_price = float(df_m5['Close'].iloc[-1])
     
-    min_broker_dist = 4.00 if ticker == "GC=F" else (0.0020 if "JPY" not in ticker and "BTC-USD" not in ticker else (0.20 if "JPY" in ticker else 30.0))
+    # Enhanced safe broker distance bounds for Gold (GC=F) and other assets
+    min_broker_dist = 6.00 if ticker == "GC=F" else (0.0020 if "JPY" not in ticker and "BTC-USD" not in ticker else (0.20 if "JPY" in ticker else 30.0))
     
     sl_distance = max(atr * 1.5, min_broker_dist)
     tp_distance = sl_distance * 2.0  # Healthy 1:2 Risk-to-Reward Ratio
@@ -217,7 +215,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **5M Active Master Trading Bot Ready.** Fighting for every pip with institutional discipline.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **5M Active Master Trading Bot Ready.** Maximum 2 concurrent trades enforced.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
 
@@ -229,7 +227,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📊 **Active Positions Status:** No active trades running right now. Scanning 24/7 for high-probability setups.", parse_mode="Markdown")
         return
     
-    msg = f"📊 **Active Portfolio Command Center ({len(active_trades)}/3 Trades):**\n━━━━━━━━━━━━━━━━━━━\n"
+    msg = f"📊 **Active Portfolio Command Center ({len(active_trades)}/2 Trades Max):**\n━━━━━━━━━━━━━━━━━━━\n"
     for label, trade in active_trades.items():
         y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), "BTC-USD")
         df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M5, period="1d")
@@ -266,7 +264,7 @@ async def hourly_status_loop(app):
             except Exception as e:
                 logging.error(f"Health check ping error: {e}")
 
-# --- REAL-TIME LIVE CHART GUIDANCE LOOP (FIGHTING FOR WINS) ---
+# --- REAL-TIME LIVE CHART GUIDANCE LOOP ---
 async def live_chart_guidance_loop(app):
     global active_trades, daily_loss_counter
     while True:
@@ -298,7 +296,7 @@ async def live_chart_guidance_loop(app):
                         f"🎯 **[MISSION ACCOMPLISHED: TARGET HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"Price crushed Take Profit at `{tp:.{dec}f}`.\n\n"
-                        f"🏆 *Trader Intel:* Capital secured, compounding gains. We fought for this win and took home the full profit! 🚀📈"
+                        f"🏆 *Trader Intel:* Capital secured. Slot freed up for the next high-conviction setup! 🚀📈"
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
@@ -311,13 +309,13 @@ async def live_chart_guidance_loop(app):
                         f"🛑 **[STOP LOSS HIT] - {label}**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"Price crossed strict defense line at `{sl:.{dec}f}`.\n\n"
-                        f"🛡️ *Mindset:* Risk was strictly isolated. Resetting focus for the next high-probability strike."
+                        f"🛡️ *Mindset:* Risk isolated. Slot freed up. Resetting focus for the next secure signal."
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
                     continue
 
-                # 3. Emergency Reversal Warning (Close Trade Early)
+                # 3. Emergency Reversal Warning
                 if not trade.get("reversal_alerted", False):
                     if (trade_type == "BUY" and current_rsi > 78) or (trade_type == "SELL" and current_rsi < 22):
                         trade["reversal_alerted"] = True
@@ -340,7 +338,7 @@ async def live_chart_guidance_loop(app):
                     )
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
-                # 5. Advanced Profit Lock / Trailing Milestone (75% distance to TP)
+                # 5. Advanced Profit Lock
                 distance_total = abs(tp - entry)
                 distance_covered = abs(current_price - entry)
                 if trade["be_hit"] and not trade.get("profit_locked", False) and distance_covered >= (distance_total * 0.75):
@@ -367,7 +365,8 @@ async def signal_loop(app):
                 await asyncio.sleep(300)
                 continue
 
-            if len(active_trades) >= 3:
+            # STRICT CAP: Maximum 2 concurrent trades/signals allowed at once
+            if len(active_trades) >= 2:
                 await asyncio.sleep(60)
                 continue
 
@@ -377,6 +376,10 @@ async def signal_loop(app):
             for ticker, label in active_assets.items():
                 if label in active_trades:
                     continue
+
+                # Re-verify capacity inside the loop in case active trades hit 2 mid-iteration
+                if len(active_trades) >= 2:
+                    break
 
                 sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, h1_bias = get_strategy_signal(ticker)
 
@@ -389,16 +392,16 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"🚨 **QUALITY INTRADAY SIGNAL**\n"
+                        f"🚨 **QUALITY INTRADAY SIGNAL ({len(active_trades) + 1}/2 Active)**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** `{label}` | **H1 Bias:** `{h1_bias}`\n"
                         f"📈 **Direction:** {dir_icon} **{sig}**\n\n"
                         f"🔹 **Entry:** `{entry:.{dec}f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
                         f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
-                        f"⚖️ **Lot Size:** `{rec_lot}`\n"
+                        f"⚖ **Lot Size:** `{rec_lot}`\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"💡 *Scanned on 5M chart. Active guidance loop engaged.*"
+                        f"💡 *Strict Risk Control: Max 2 trades active.*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -432,7 +435,6 @@ def main():
 
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
     
-    # Updated with drop_pending_updates=True to clear lingering polling sessions cleanly
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
