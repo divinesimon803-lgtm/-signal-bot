@@ -26,18 +26,16 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
 RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 DEFAULT_ACCOUNT_BALANCE = 1000.0
 
-# --- NARROWED 3-ASSET INSTITUTIONAL LIST ---
+# --- TAILORED ASSET STRATEGY LIST ---
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",
-    "EURUSD=X": "EURUSD",
-    "BTC-USD": "BTCUSD"
+    "GC=F": "XAUUSD"  # Dedicated Gold Sniper (Mon-Fri)
 }
 
 WEEKEND_ASSETS = {
-    "BTC-USD": "BTCUSD"
+    "BTC-USD": "BTCUSD"  # Dedicated Bitcoin Momentum (Sat-Sun)
 }
 
-TIMEFRAME_M5 = "5m"
+TIMEFRAME_M15 = "15m"
 TIMEFRAME_H1 = "1h"
 
 last_signals = {}
@@ -55,39 +53,29 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Institutional Master Trader Engine (3-Asset Pro Framework) is Live & Protecting Capital."
+    return "Tailored Gold/Bitcoin Sniper Engine is Live & Protecting Capital."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- ADVANCED ECONOMIC NEWS & HIGH-IMPACT FILTER ---
+# --- HIGH-IMPACT NEWS DEFENSE ---
 def is_high_impact_news_time():
     now = datetime.datetime.now(datetime.timezone.utc)
-    
-    # 1. Non-Farm Payrolls (First Friday of the month, 12:00 to 15:30 UTC)
-    if now.weekday() == 4 and now.day <= 7:
-        if 12 <= now.hour <= 15:
-            return True, "US Non-Farm Payrolls (NFP) High-Volatility Defense Window"
-            
-    # 2. Mid-week high impact windows (Wednesdays & Thursdays around major US data releases 12:30 - 15:00 UTC)
+    if now.weekday() == 4 and now.day <= 7 and 12 <= now.hour <= 15:
+        return True, "US NFP Defense Window"
     if now.weekday() in [2, 3] and now.hour == 13 and 20 <= now.minute <= 59:
-        return True, "FOMC / CPI High-Impact Data Release Defense Window"
-        
-    # 3. Daily Tokyo/London/New York session transition chop filters
-    if now.hour in [21, 22, 6, 7, 16, 17]:
-        return True, "Inter-Session Liquidity Transition Window"
-        
+        return True, "FOMC / CPI Defense Window"
     return False, ""
 
-# --- DYNAMIC LOT SIZING ---
+# --- DYNAMIC LOT SIZING (WITH BROKER REJECTION PREVENTION) ---
 def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALANCE):
     risk_amount = account_balance * RISK_PER_TRADE_PCT
-    pip_value = 10.0
-    if ticker == "EURUSD=X":
-        pip_value = 10.0
-    elif ticker in ["GC=F", "BTC-USD"]:
-        pip_value = 1.0
+    pip_value = 1.0
+    if ticker == "GC=F":
+        pip_value = 1.0  # Gold dollar value scaling
+    elif ticker == "BTC-USD":
+        pip_value = 1.0  # BTC dollar value scaling
 
     if sl_pips <= 0:
         return 0.01
@@ -95,7 +83,7 @@ def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALAN
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
     return max(0.01, min(calculated_lot, 0.05 if account_balance < 500.0 else 2.0))
 
-# --- DATA FETCHER ---
+# --- DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="5d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
@@ -121,6 +109,12 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
+        
+        # Bollinger Bands for Bitcoin Weekend Strategy
+        bb = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
+        df['bb_upper'] = bb.bollinger_hband()
+        df['bb_lower'] = bb.bollinger_lband()
+        df['bb_middle'] = bb.bollinger_mavg()
 
         return df
     except Exception as e:
@@ -142,21 +136,17 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- STRICT INSTITUTIONAL GOLD STRATEGY (XAUUSD) ---
+# --- STRATEGY 1: GOLD (XAUUSD) TREND-PULLBACK (WEEKDAYS) ---
 def get_gold_strategy_signal(ticker):
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if not (8 <= now.hour <= 20):
-        return None, None, None, None, None, None, None, None, None
-
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
         return None, None, None, None, None, None, None, None, None
 
-    df_m5 = fetch_data(ticker, interval=TIMEFRAME_M5, period="2d")
-    if df_m5 is None or len(df_m5) < 50:
+    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
+    if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None, None
 
-    c = df_m5.iloc[-2]
+    c = df_m15.iloc[-2]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']):
         return None, None, None, None, None, None, None, None, None
 
@@ -166,112 +156,91 @@ def get_gold_strategy_signal(ticker):
     ema50 = float(c['ema50'])
 
     sig = None
-    if h1_bias == "BULLISH" and close_p > ema50 and (50 <= rsi <= 65):
+    # Healthy Pullback Criteria
+    if h1_bias == "BULLISH" and close_p > ema50 and (40 <= rsi <= 50):
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p < ema50 and (35 <= rsi <= 50):
+    elif h1_bias == "BEARISH" and close_p < ema50 and (50 <= rsi <= 60):
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None
 
-    live_price = float(df_m5['Close'].iloc[-1])
-    spread_buffer = 1.5 
+    live_price = float(df_m15['Close'].iloc[-1])
+    spread_buffer = 1.0  
     
-    sl_distance = max(atr * 3.0, 25.00)
-    tp_distance = sl_distance * 2.5  # 1:2.5 Risk-to-Reward
+    # Safe minimum distance to prevent broker rejections
+    sl_distance = max(atr * 2.5, 15.00)
+    tp_distance = sl_distance * 2.25  # 1:2.25 Risk-to-Reward
 
     if sig == "BUY":
         entry = live_price + spread_buffer
         sl = entry - sl_distance
         tp = entry + tp_distance
-        partial_target = entry + (sl_distance * 1.0)
         be_level = entry + (sl_distance * 1.1)
     else:
         entry = live_price - spread_buffer
         sl = entry + sl_distance
         tp = entry - tp_distance
-        partial_target = entry - (sl_distance * 1.0)
         be_level = entry - (sl_distance * 1.1)
 
-    sl_pips = sl_distance * 1.0 
-    rec_lot = calculate_dynamic_lot(ticker, sl_pips)
-    
-    return sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, f"GOLD-STRICT ({h1_bias})"
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"GOLD-PULLBACK ({h1_bias})"
 
-# --- MULTI-FILTER STRATEGY FOR EURUSD & BTCUSD ---
-def get_strategy_signal(ticker):
-    global daily_loss_counter, last_trade_reset_date
-    
-    current_date = datetime.datetime.now(datetime.timezone.utc).date()
-    if current_date != last_trade_reset_date:
-        daily_loss_counter = 0
-        last_trade_reset_date = current_date
-
-    # Circuit breaker: Stop trading for the day if 3 losses are hit
-    if daily_loss_counter >= 3:
+# --- STRATEGY 2: BITCOIN (BTCUSD) MOMENTUM BOUNCE (WEEKENDS) ---
+def get_bitcoin_strategy_signal(ticker):
+    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
+    if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None, None
 
-    if ticker == "GC=F":
-        return get_gold_strategy_signal(ticker)
-
-    h1_bias = get_h1_trend_bias(ticker)
-    if h1_bias == "NEUTRAL":
-        return None, None, None, None, None, None, None, None, None
-    
-    df_m5 = fetch_data(ticker, interval=TIMEFRAME_M5, period="2d")
-    if df_m5 is None or len(df_m5) < 50:
-        return None, None, None, None, None, None, None, None, None
-
-    c = df_m5.iloc[-2]
-    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']) or pd.isna(c['ema200']):
+    c = df_m15.iloc[-2]
+    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['bb_lower']) or pd.isna(c['bb_upper']):
         return None, None, None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
     close_p = float(c['Close'])
     rsi = float(c['rsi14'])
-    
-    recent_high = float(df_m5['High'].iloc[-15:-2].max())
-    recent_low = float(df_m5['Low'].iloc[-15:-2].min())
-
-    # Asset-specific spread and broker pip buffers
-    if ticker == "EURUSD=X":
-        spread_buffer = 0.0002
-        min_broker_dist = 0.0025
-    else:  # BTC-USD
-        spread_buffer = 30.0
-        min_broker_dist = 40.0
+    bb_lower = float(c['bb_lower'])
+    bb_upper = float(c['bb_upper'])
+    bb_middle = float(c['bb_middle'])
 
     sig = None
-    # Trend + Breakout + Momentum Confluence filter
-    if h1_bias == "BULLISH" and close_p > recent_high and (45 <= rsi <= 68):
+    # Weekend Mean-Reversion / Bounce Criteria
+    if close_p <= bb_lower and rsi < 35:
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p < recent_low and (32 <= rsi <= 55):
+    elif close_p >= bb_upper and rsi > 65:
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None
 
-    live_price = float(df_m5['Close'].iloc[-1])
-    sl_distance = max(atr * 2.0, min_broker_dist)
-    tp_distance = sl_distance * 2.25
+    live_price = float(df_m15['Close'].iloc[-1])
+    spread_buffer = 20.0
+    
+    sl_distance = max(atr * 2.0, 50.0)
+    tp_distance = abs(live_price - bb_middle) # Target the middle band
+    if tp_distance < (sl_distance * 1.5):
+        tp_distance = sl_distance * 2.0
 
     if sig == "BUY":
         entry = live_price + spread_buffer
         sl = entry - sl_distance
         tp = entry + tp_distance
-        partial_target = entry + (sl_distance * 1.0)
         be_level = entry + (sl_distance * 1.1)
     else:
         entry = live_price - spread_buffer
         sl = entry + sl_distance
         tp = entry - tp_distance
-        partial_target = entry - (sl_distance * 1.0)
         be_level = entry - (sl_distance * 1.1)
 
-    sl_pips = sl_distance * 10000 if ticker == "EURUSD=X" else sl_distance
-    rec_lot = calculate_dynamic_lot(ticker, sl_pips)
-    
-    return sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, h1_bias
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "BTC-WEEKEND-BOUNCE"
+
+def get_strategy_signal(ticker):
+    if ticker == "GC=F":
+        return get_gold_strategy_signal(ticker)
+    elif ticker == "BTC-USD":
+        return get_bitcoin_strategy_signal(ticker)
+    return None, None, None, None, None, None, None, None, None
 
 # --- TELEGRAM COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,7 +248,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Institutional 3-Asset Sniper Online.** Strategy Framework Active + Max 1 Active Trade Enforced.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Tailored Gold & Bitcoin Sniper Online.** 15m Framework Active + Anti-Rejection Shield.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
 
@@ -288,49 +257,25 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if not active_trades:
-        await update.message.reply_text("📊 **Active Portfolio Status:** No active trades right now. Waiting for high-conviction sniper setup.", parse_mode="Markdown")
+        await update.message.reply_text("📊 **Portfolio Status:** No active trades right now. Sniper is scanning for clean setups.", parse_mode="Markdown")
         return
     
-    msg = f"📊 **Lead Trader Command Center ({len(active_trades)} Active):**\n━━━━━━━━━━━━━━━━━━━\n"
+    msg = f"📊 **Active Portfolio Status ({len(active_trades)} Active):**\n━━━━━━━━━━━━━━━━━━━\n"
     for label, trade in active_trades.items():
-        y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), "BTC-USD")
-        df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M5, period="1d")
+        y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
+        df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
         current_price = float(df_temp['Close'].iloc[-1]) if df_temp is not None and not df_temp.empty else trade['entry']
-        dec = 2 if y_ticker in ["BTC-USD", "GC=F"] else 4
         
-        pips_away_tp = abs(trade['tp'] - current_price) * (10000 if y_ticker == "EURUSD=X" else 1)
-        pips_away_sl = abs(current_price - trade['sl']) * (10000 if y_ticker == "EURUSD=X" else 1)
-        
-        if trade.get('profit_locked', False):
-            status_desc = "💰 Profit Locked / Trailing"
-        elif trade['be_hit']:
-            status_desc = "🛡 Breakeven Secured"
-        else:
-            status_desc = "⚔ In Battle for Target"
-            
         msg += (
             f"📌 **{label}** ({trade['type']})\n"
-            f"• Entry: `{trade['entry']:.{dec}f}` | Live: `{current_price:.{dec}f}`\n"
-            f"• Status: *{status_desc}*\n"
-            f"• Distance to TP: `{pips_away_tp:.1f} units` | SL Dist: `{pips_away_sl:.1f} units`\n\n"
+            f"• Entry: `{trade['entry']:.2f}` | Live: `{current_price:.2f}`\n"
+            f"• Stop Loss: `{trade['sl']:.2f}` | Take Profit: `{trade['tp']:.2f}`\n\n"
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- HEALTH PING LOOP ---
-async def hourly_status_loop(app):
-    while True:
-        await asyncio.sleep(14400)
-        if authorized_users:
-            target_user = list(authorized_users)[0]
-            msg = "🟢 **[SYSTEM HEALTH CHECK]**\n3-Asset Sniper Bot is active, scanning high-confluence zones, and defending your capital. 🚀"
-            try:
-                await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"Health check ping error: {e}")
-
-# --- REAL-TIME LIVE CHART GUIDANCE LOOP ---
+# --- REAL-TIME GUIDANCE LOOP ---
 async def live_chart_guidance_loop(app):
-    global active_trades, daily_loss_counter
+    global active_trades
     while True:
         await asyncio.sleep(10)
         if not active_trades:
@@ -340,80 +285,36 @@ async def live_chart_guidance_loop(app):
 
         for label, trade in list(active_trades.items()):
             try:
-                y_ticker = next((k for k, v in WEEKDAY_ASSETS.items() if v == label), "BTC-USD")
-                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M5, period="1d")
+                y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
+                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
                 if df_live is None or len(df_live) < 10:
                     continue
 
                 current_price = float(df_live['Close'].iloc[-1])
-                current_rsi = float(df_live['rsi14'].iloc[-1])
                 trade_type = trade["type"]
                 entry = trade["entry"]
                 sl = trade["sl"]
                 tp = trade["tp"]
                 be_level = trade["be_level"]
-                dec = 2 if y_ticker in ["BTC-USD", "GC=F"] else 4
 
-                # 1. Take Profit Hit
+                # Take Profit Hit
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = (
-                        f"🎯 **[SNIPER: TARGET CRUSHED!]** - {label}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Price successfully hit Take Profit at `{tp:.{dec}f}`.\n\n"
-                        f"🏆 *Mindset:* Flawless execution. Capital grown. Slot ready for next elite setup! 🚀"
-                    )
+                    msg = f"🎯 **[TARGET CRUSHED!]** - {label}\nPrice hit Take Profit at `{tp:.2f}`. Great discipline! 🚀"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
                     continue
 
-                # 2. Stop Loss Hit
+                # Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    daily_loss_counter += 1
-                    msg = (
-                        f"🛑 **[STOP LOSS DEFENSE]** - {label}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Market pulled back past our defense line at `{sl:.{dec}f}`.\n\n"
-                        f"🛡 *Discipline:* Risk was strictly isolated to 1.5%. Staying calm, waiting for high quality reload."
-                    )
+                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket triggered defense line at `{sl:.2f}`. Risk was safely contained to 1.5%. Staying calm."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     active_trades.pop(label, None)
                     continue
 
-                # 3. Emergency Momentum Reversal Warning
-                if not trade.get("reversal_alerted", False):
-                    if (trade_type == "BUY" and current_rsi > 78) or (trade_type == "SELL" and current_rsi < 22):
-                        trade["reversal_alerted"] = True
-                        msg = (
-                            f"⚠️ **[SNIPER ALERT: URGENT REVERSAL WARNING]** - {label}\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"📊 **Reason:** RSI reached extreme exhaustion levels (`{current_rsi:.1f}`). Market is showing sharp snapback signs.\n"
-                            f"👉 **Action:** Consider manually booking profits right now at `{current_price:.{dec}f}` before momentum flips!"
-                        )
-                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                # 4. Breakeven Trigger
+                # Breakeven Alert
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
-                    msg = (
-                        f"🛡 **[SNIPER: MOVE SL TO ENTRY]** - {label}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📈 **Reason:** Price progressed nicely to `{current_price:.{dec}f}`.\n"
-                        f"👉 **Action:** Move your Stop Loss to Entry (`{entry:.{dec}f}`). This trade is now 100% risk-free!"
-                    )
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-
-                # 5. Advanced Profit Lock
-                distance_total = abs(tp - entry)
-                distance_covered = abs(current_price - entry)
-                if trade["be_hit"] and not trade.get("profit_locked", False) and distance_covered >= (distance_total * 0.70):
-                    trade["profit_locked"] = True
-                    secure_lock_price = entry + (distance_total * 0.4) if trade_type == "BUY" else entry - (distance_total * 0.4)
-                    msg = (
-                        f"💰 **[AGGRESSIVE MANAGEMENT: LOCK 40% GAINS]** - {label}\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📈 **Reason:** We are 70% toward full target (`{current_price:.{dec}f}`).\n"
-                        f"👉 **Action:** Trail your Stop Loss to `{secure_lock_price:.{dec}f}` to lock in guaranteed profits!"
-                    )
+                    msg = f"🛡 **[MOVE SL TO ENTRY]** - {label}\nPrice progressed to `{current_price:.2f}`. Move Stop Loss to `{entry:.2f}` to make this trade risk-free!"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
             except Exception as e:
@@ -424,47 +325,38 @@ async def signal_loop(app):
     global last_signals, active_trades
     while True:
         try:
-            is_news, news_reason = is_high_impact_news_time()
-            if is_news:
-                await asyncio.sleep(300)
-                continue
-
-            # Strict quality control: Only allow 1 active trade at a time
             if len(active_trades) >= 1:
                 await asyncio.sleep(60)
                 continue
 
             day = datetime.datetime.now(datetime.timezone.utc).weekday()
+            # Weekdays = Gold, Weekends = Bitcoin
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
                 if label in active_trades:
                     continue
 
-                if len(active_trades) >= 1:
-                    break
-
-                sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, h1_bias = get_strategy_signal(ticker)
+                sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
 
                 if sig is None:
                     continue
 
                 if last_signals.get(ticker) != sig:
                     last_signals[ticker] = sig
-                    dec = 2 if ticker in ["BTC-USD", "GC=F"] else 4
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **ELITE SNIPER SIGNAL (3-ASSET FOCUS)**\n"
+                        f"💎 **ELITE SNIPER SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 **Asset:** `{label}` | **Trend:** `{h1_bias}`\n"
+                        f"📌 **Asset:** `{label}` | **Strategy:** `{strategy_name}`\n"
                         f"📈 **Direction:** {dir_icon} **{sig}**\n\n"
-                        f"🔹 **Entry:** `{entry:.{dec}f}`\n"
-                        f"🔴 **Stop Loss:** `{sl:.{dec}f}`\n"
-                        f"🎯 **Take Profit:** `{tp:.{dec}f}`\n"
+                        f"🔹 **Entry:** `{entry:.2f}`\n"
+                        f"🔴 **Stop Loss:** `{sl:.2f}`\n"
+                        f"🎯 **Take Profit:** `{tp:.2f}`\n"
                         f"⚖️ **Rec. Lot Size:** `{rec_lot}`\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🧠 *Sniper Note: Multi-filter strategy criteria met. Execute with professional discipline.*"
+                        f"🧠 *Execute with professional discipline on demo!*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -475,21 +367,17 @@ async def signal_loop(app):
                         "entry": entry,
                         "sl": sl,
                         "tp": tp,
-                        "partial_target": partial_target,
                         "be_level": be_level,
-                        "be_hit": False,
-                        "profit_locked": False,
-                        "reversal_alerted": False
+                        "be_hit": False
                     }
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
 
-        await asyncio.sleep(30)
+        await asyncio.sleep(20)
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(live_chart_guidance_loop(app))
-    asyncio.create_task(hourly_status_loop(app))
 
 # --- MAIN ENTRY ---
 def main():
@@ -497,7 +385,6 @@ def main():
     asyncio.set_event_loop(loop)
 
     t_request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
-    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -506,7 +393,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Institutional 3-Asset Sniper Engine Running 24/7...")
+    logging.info("Tailored Gold & Bitcoin Sniper Engine Running 24/7...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
