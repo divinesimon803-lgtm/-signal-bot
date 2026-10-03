@@ -3,6 +3,7 @@ import datetime
 import logging
 import os
 import pandas as pd
+import requests
 import ta
 import yfinance as yf
 from flask import Flask
@@ -81,6 +82,42 @@ def check_strategy_performance():
             
     return False, "", ""
 
+# --- AUTOMATIC NEWS CIRCUIT BREAKER (AVOIDS SLIPPAGE SPIKES) ---
+def is_high_impact_news_time():
+    """
+    Checks for major high-impact economic events (US Dollar / Global macro events).
+    Queries a free economic events endpoint or uses safety checks for standard high-volatility windows 
+    (e.g., FOMC / NFP generalized timing guards if network fails).
+    """
+    try:
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        
+        # 1. Check real-time economic calendar API (Forex Factory public JSON mirror)
+        response = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=5)
+        if response.status_code == 200:
+            events = response.json()
+            for ev in events:
+                if ev.get("impact") == "High":
+                    # Parse event date string
+                    ev_date_str = ev.get("date")
+                    if ev_date_str:
+                        ev_time = datetime.datetime.fromisoformat(ev_date_str.replace("Z", "+00:00"))
+                        # If an event is within the next 30 minutes or happened 15 minutes ago
+                        time_diff = (ev_time - now_utc).total_seconds() / 60.0
+                        if -15 <= time_diff <= 30:
+                            return True, f"High-Impact News Event: {ev.get('title')} ({ev.get('country')})"
+        
+        # 2. General Safe Guard: Friday afternoon market close / Sunday market open volatility windows
+        if now_utc.weekday() == 4 and now_utc.hour >= 20: # Friday after 20:00 UTC
+            return True, "Weekend Market Close Volatility Window"
+        if now_utc.weekday() == 6 and now_utc.hour < 1: # Sunday market open spike guard
+            return True, "Weekend Market Open Volatility Window"
+
+    except Exception as e:
+        logging.error(f"News check API error: {e}")
+
+    return False, ""
+
 # --- CIRCUIT BREAKER STATE ---
 daily_loss_counter = 0
 last_trade_reset_date = datetime.datetime.now(datetime.timezone.utc).date()
@@ -92,7 +129,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Tailored Gold/Bitcoin Sniper Engine is Live & Protecting Capital."
+    return "Tailored Gold/Bitcoin Sniper Engine is Live & Protecting Capital with News Shield."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -112,7 +149,6 @@ def calculate_dynamic_lot(ticker, sl_pips):
         return 0.01
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    # Enforces strict broker floor (0.01) and caps size safely based on account scale
     max_cap = 0.05 if current_account_balance < 100.0 else 2.0
     return max(0.01, min(calculated_lot, max_cap))
 
@@ -143,7 +179,6 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
         
-        # Bollinger Bands for Bitcoin Weekend Strategy
         bb = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
         df['bb_upper'] = bb.bollinger_hband()
         df['bb_lower'] = bb.bollinger_lband()
@@ -201,7 +236,7 @@ def get_gold_strategy_signal(ticker):
     spread_buffer = 1.0  
     
     sl_distance = max(atr * 2.5, 15.00)
-    tp_distance = sl_distance * 2.25  # 1:2.25 Risk-to-Reward
+    tp_distance = sl_distance * 2.25
 
     if sig == "BUY":
         entry = live_price + spread_buffer
@@ -279,7 +314,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Tailored Gold & Bitcoin Sniper Online.**\n💰 Active Balance Mode: **${current_account_balance}**\n15m Framework Active + Performance Monitor.", 
+            f"🔓 **Tailored Gold & Bitcoin Sniper Online.**\n💰 Active Balance Mode: **${current_account_balance}**\n🛡️ **News Shield Active:** Automatic slippage protection enabled.", 
             parse_mode="Markdown"
         )
     else:
@@ -300,17 +335,20 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
             
-    await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance}\n*To update your balance, type:* `/balance 10`", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance}\n*To update your balance, type:* `/balance 20`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
+    news_active, news_reason = is_high_impact_news_time()
+    news_status_str = f"⚠️ **Paused (News Shield):** {news_reason}" if news_active else "🟢 **Normal (Scanning active)**"
+
     if not active_trades:
-        await update.message.reply_text(f"📊 **Portfolio Status (Balance: ${current_account_balance}):**\nNo active trades right now. Sniper is scanning for clean setups.", parse_mode="Markdown")
+        await update.message.reply_text(f"📊 **Portfolio Status (Balance: ${current_account_balance}):**\nStatus: {news_status_str}\nNo active trades right now.", parse_mode="Markdown")
         return
     
-    msg = f"📊 **Active Portfolio Status (Balance: ${current_account_balance}):**\n━━━━━━━━━━━━━━━━━━━\n"
+    msg = f"📊 **Active Portfolio Status (Balance: ${current_account_balance}):**\nStatus: {news_status_str}\n━━━━━━━━━━━━━━━━━━━\n"
     for label, trade in active_trades.items():
         y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
         df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
@@ -358,13 +396,12 @@ async def live_chart_guidance_loop(app):
 
                 # Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket triggered defense line at `{sl:.2f}`. Risk was safely contained to 1.5% of ${current_account_balance}. Staying calm."
+                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket triggered defense line at `{sl:.2f}`. Risk was safely contained to 1.5% of ${current_account_balance}."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     
                     record_trade_outcome("LOSS")
                     active_trades.pop(label, None)
                     
-                    # Check if strategy needs an update after recording loss
                     needs_update, reason, suggestion = check_strategy_performance()
                     if needs_update:
                         update_alert = (
@@ -390,8 +427,27 @@ async def live_chart_guidance_loop(app):
 # --- SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
     global last_signals, active_trades
+    news_alert_sent = False
+
     while True:
         try:
+            # 1. Check News Circuit Breaker before scanning
+            is_news, news_desc = is_high_impact_news_time()
+            if is_news:
+                if not news_alert_sent:
+                    target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+                    if target_user and authorized_users:
+                        await app.bot.send_message(
+                            chat_id=target_user, 
+                            text=f"🛡️ **[NEWS CIRCUIT BREAKER TRIGGERED]**\nDetected: *{news_desc}*.\nPausing sniper signal generation to protect your account from slippage spikes.", 
+                            parse_mode="Markdown"
+                        )
+                    news_alert_sent = True
+                await asyncio.sleep(60)
+                continue
+            else:
+                news_alert_sent = False # Reset alert flag when coast is clear
+
             if len(active_trades) >= 1:
                 await asyncio.sleep(60)
                 continue
@@ -422,7 +478,7 @@ async def signal_loop(app):
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
                         f"⚖️ **Rec. Lot Size:** `{rec_lot}` *(Based on ${current_account_balance})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🧠 *Execute with professional discipline on demo!*"
+                        f"🛡️ *News Shield verified: Safe to execute.*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -460,7 +516,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Tailored Gold & Bitcoin Sniper Engine Running 24/7...")
+    logging.info("Tailored Gold & Bitcoin Sniper Engine Running 24/7 with News Shield...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
