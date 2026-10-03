@@ -42,6 +42,43 @@ last_signals = {}
 authorized_users = set()
 active_trades = {}  # Tracks ongoing trades for live institutional management
 
+# --- STRATEGY PERFORMANCE MONITORING & AUTO-DIAGNOSIS ---
+trade_history = []  # Stores recent trade outcomes ("WIN" or "LOSS")
+MAX_HISTORY_LEN = 20  # Keeps track of the last 20 trades for trend analysis
+strategy_alert_sent = False  # Prevents spamming alerts
+
+def record_trade_outcome(outcome):
+    global trade_history, strategy_alert_sent
+    trade_history.append(outcome)
+    if len(trade_history) > MAX_HISTORY_LEN:
+        trade_history.pop(0)  # Maintain rolling window
+
+def check_strategy_performance():
+    """Analyzes recent performance. Returns (needs_update: bool, reason: str, suggestion: str)"""
+    global strategy_alert_sent
+    if len(trade_history) < 10:  # Need at least a sample of 10 trades before judging
+        return False, "", ""
+    
+    losses_in_row = 0
+    for outcome in reversed(trade_history):
+        if outcome == "LOSS":
+            losses_in_row += 1
+        else:
+            break
+
+    # If we hit 5 losses in a row, or win rate in the last 15 trades drops below 25%
+    recent_window = trade_history[-15:]
+    recent_losses = recent_window.count("LOSS")
+    
+    if losses_in_row >= 5 or (len(recent_window) >= 10 and (recent_losses / len(recent_window)) >= 0.75):
+        if not strategy_alert_sent:
+            strategy_alert_sent = True  # Lock so it only alerts once until reset
+            reason = f"Detected a sustained drawdown ({losses_in_row} consecutive losses or heavy failure rate in recent window)."
+            suggestion = "Market volatility regime may have shifted. Consider letting me tweak your RSI boundary thresholds or EMA trend filters."
+            return True, reason, suggestion
+            
+    return False, "", ""
+
 # --- CIRCUIT BREAKER STATE ---
 daily_loss_counter = 0
 last_trade_reset_date = datetime.datetime.now(datetime.timezone.utc).date()
@@ -58,15 +95,6 @@ def home():
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-# --- HIGH-IMPACT NEWS DEFENSE ---
-def is_high_impact_news_time():
-    now = datetime.datetime.now(datetime.timezone.utc)
-    if now.weekday() == 4 and now.day <= 7 and 12 <= now.hour <= 15:
-        return True, "US NFP Defense Window"
-    if now.weekday() in [2, 3] and now.hour == 13 and 20 <= now.minute <= 59:
-        return True, "FOMC / CPI Defense Window"
-    return False, ""
 
 # --- DYNAMIC LOT SIZING (WITH BROKER REJECTION PREVENTION) ---
 def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALANCE):
@@ -156,7 +184,6 @@ def get_gold_strategy_signal(ticker):
     ema50 = float(c['ema50'])
 
     sig = None
-    # Healthy Pullback Criteria
     if h1_bias == "BULLISH" and close_p > ema50 and (40 <= rsi <= 50):
         sig = "BUY"
     elif h1_bias == "BEARISH" and close_p < ema50 and (50 <= rsi <= 60):
@@ -168,7 +195,6 @@ def get_gold_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     spread_buffer = 1.0  
     
-    # Safe minimum distance to prevent broker rejections
     sl_distance = max(atr * 2.5, 15.00)
     tp_distance = sl_distance * 2.25  # 1:2.25 Risk-to-Reward
 
@@ -204,7 +230,6 @@ def get_bitcoin_strategy_signal(ticker):
     bb_middle = float(c['bb_middle'])
 
     sig = None
-    # Weekend Mean-Reversion / Bounce Criteria
     if close_p <= bb_lower and rsi < 35:
         sig = "BUY"
     elif close_p >= bb_upper and rsi > 65:
@@ -217,7 +242,7 @@ def get_bitcoin_strategy_signal(ticker):
     spread_buffer = 20.0
     
     sl_distance = max(atr * 2.0, 50.0)
-    tp_distance = abs(live_price - bb_middle) # Target the middle band
+    tp_distance = abs(live_price - bb_middle)
     if tp_distance < (sl_distance * 1.5):
         tp_distance = sl_distance * 2.0
 
@@ -248,7 +273,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Tailored Gold & Bitcoin Sniper Online.** 15m Framework Active + Anti-Rejection Shield.", parse_mode="Markdown")
+        await update.message.reply_text("🔓 **Tailored Gold & Bitcoin Sniper Online.** 15m Framework Active + Performance Monitor.", parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
 
@@ -301,6 +326,8 @@ async def live_chart_guidance_loop(app):
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     msg = f"🎯 **[TARGET CRUSHED!]** - {label}\nPrice hit Take Profit at `{tp:.2f}`. Great discipline! 🚀"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    
+                    record_trade_outcome("WIN")
                     active_trades.pop(label, None)
                     continue
 
@@ -308,7 +335,22 @@ async def live_chart_guidance_loop(app):
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket triggered defense line at `{sl:.2f}`. Risk was safely contained to 1.5%. Staying calm."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    
+                    record_trade_outcome("LOSS")
                     active_trades.pop(label, None)
+                    
+                    # Check if strategy needs an update after recording loss
+                    needs_update, reason, suggestion = check_strategy_performance()
+                    if needs_update:
+                        update_alert = (
+                            f"⚠️️ **[STRATEGY PERFORMANCE ALERT]**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"ℹ️ **Reason:** {reason}\n"
+                            f"💡 **Suggestion:** {suggestion}\n"
+                            f"👉 *Paste your code back to me whenever you're ready to review or tweak it!*"
+                        )
+                        await app.bot.send_message(chat_id=target_user, text=update_alert, parse_mode="Markdown")
+
                     continue
 
                 # Breakeven Alert
@@ -330,7 +372,6 @@ async def signal_loop(app):
                 continue
 
             day = datetime.datetime.now(datetime.timezone.utc).weekday()
-            # Weekdays = Gold, Weekends = Bitcoin
             active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
 
             for ticker, label in active_assets.items():
