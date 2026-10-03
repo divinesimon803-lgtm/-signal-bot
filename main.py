@@ -24,7 +24,9 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
 RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
-DEFAULT_ACCOUNT_BALANCE = 1000.0
+
+# --- ACCOUNT BALANCE MANAGEMENT ---
+current_account_balance = 30.0  # Default baseline; update anytime via /balance command
 
 # --- TAILORED ASSET STRATEGY LIST ---
 WEEKDAY_ASSETS = {
@@ -96,9 +98,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- DYNAMIC LOT SIZING (WITH BROKER REJECTION PREVENTION) ---
-def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALANCE):
-    risk_amount = account_balance * RISK_PER_TRADE_PCT
+# --- DYNAMIC LOT SIZING (TIRED TO LIVE ACCOUNT BALANCE) ---
+def calculate_dynamic_lot(ticker, sl_pips):
+    global current_account_balance
+    risk_amount = current_account_balance * RISK_PER_TRADE_PCT
     pip_value = 1.0
     if ticker == "GC=F":
         pip_value = 1.0  # Gold dollar value scaling
@@ -109,7 +112,9 @@ def calculate_dynamic_lot(ticker, sl_pips, account_balance=DEFAULT_ACCOUNT_BALAN
         return 0.01
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    return max(0.01, min(calculated_lot, 0.05 if account_balance < 500.0 else 2.0))
+    # Enforces strict broker floor (0.01) and caps size safely based on account scale
+    max_cap = 0.05 if current_account_balance < 100.0 else 2.0
+    return max(0.01, min(calculated_lot, max_cap))
 
 # --- DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="5d"):
@@ -273,19 +278,39 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        await update.message.reply_text("🔓 **Tailored Gold & Bitcoin Sniper Online.** 15m Framework Active + Performance Monitor.", parse_mode="Markdown")
+        await update.message.reply_text(
+            f"🔓 **Tailored Gold & Bitcoin Sniper Online.**\n💰 Active Balance Mode: **${current_account_balance}**\n15m Framework Active + Performance Monitor.", 
+            parse_mode="Markdown"
+        )
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global current_account_balance
+    if update.effective_user.id not in authorized_users:
+        return
+    
+    args = context.args
+    if args:
+        try:
+            new_bal = float(args[0])
+            current_account_balance = new_bal
+            await update.message.reply_text(f"✅ **Account Balance Updated:** Bot will now calculate risk based on **${current_account_balance}**.", parse_mode="Markdown")
+            return
+        except ValueError:
+            pass
+            
+    await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance}\n*To update your balance, type:* `/balance 10`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
     if not active_trades:
-        await update.message.reply_text("📊 **Portfolio Status:** No active trades right now. Sniper is scanning for clean setups.", parse_mode="Markdown")
+        await update.message.reply_text(f"📊 **Portfolio Status (Balance: ${current_account_balance}):**\nNo active trades right now. Sniper is scanning for clean setups.", parse_mode="Markdown")
         return
     
-    msg = f"📊 **Active Portfolio Status ({len(active_trades)} Active):**\n━━━━━━━━━━━━━━━━━━━\n"
+    msg = f"📊 **Active Portfolio Status (Balance: ${current_account_balance}):**\n━━━━━━━━━━━━━━━━━━━\n"
     for label, trade in active_trades.items():
         y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
         df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
@@ -333,7 +358,7 @@ async def live_chart_guidance_loop(app):
 
                 # Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket triggered defense line at `{sl:.2f}`. Risk was safely contained to 1.5%. Staying calm."
+                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket triggered defense line at `{sl:.2f}`. Risk was safely contained to 1.5% of ${current_account_balance}. Staying calm."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     
                     record_trade_outcome("LOSS")
@@ -343,7 +368,7 @@ async def live_chart_guidance_loop(app):
                     needs_update, reason, suggestion = check_strategy_performance()
                     if needs_update:
                         update_alert = (
-                            f"⚠️️ **[STRATEGY PERFORMANCE ALERT]**\n"
+                            f"⚠ **[STRATEGY PERFORMANCE ALERT]**\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"ℹ️ **Reason:** {reason}\n"
                             f"💡 **Suggestion:** {suggestion}\n"
@@ -395,7 +420,7 @@ async def signal_loop(app):
                         f"🔹 **Entry:** `{entry:.2f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.2f}`\n"
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
-                        f"⚖️ **Rec. Lot Size:** `{rec_lot}`\n"
+                        f"⚖️ **Rec. Lot Size:** `{rec_lot}` *(Based on ${current_account_balance})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"🧠 *Execute with professional discipline on demo!*"
                     )
@@ -429,6 +454,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
 
     flask_thread = Thread(target=run_flask, daemon=True)
