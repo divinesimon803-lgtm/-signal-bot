@@ -30,8 +30,10 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 current_account_balance = 30.0  # Default baseline; update anytime via /balance command
 
 # --- TAILORED ASSET STRATEGY LIST ---
+# BTC runs 24/7, Gold runs Mon-Fri during active institutional sessions
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD"  # Dedicated Gold Sniper (Mon-Fri)
+    "GC=F": "XAUUSD",  # Dedicated Gold Sniper (Mon-Fri)
+    "BTC-USD": "BTCUSD" # Bitcoin active 24/7
 }
 
 WEEKEND_ASSETS = {
@@ -81,25 +83,29 @@ def check_strategy_performance():
     return False, "", ""
 
 # --- PROFESSIONAL SESSION TIME-OF-DAY FILTER ---
-def is_active_trading_session():
+def is_active_trading_session(ticker):
     """
-    Ensures the bot only trades during high-volume institutional sessions 
-    (London & New York windows where spreads are tightest and moves are clean).
+    Ensures assets trade during appropriate windows:
+    - BTC runs 24/7 (with weekend volatility checks handled by News Shield).
+    - Gold (GC=F) trades strictly during high-volume institutional windows (07:00 - 20:00 UTC on weekdays).
     """
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     hour = now_utc.hour
 
-    # Weekend session (Crypto: Sat & Sun) - high liquidity or steady momentum hours
-    if weekday >= 5:
+    # Crypto (BTC-USD): Allowed 24/7
+    if ticker == "BTC-USD":
         return True
 
-    # Weekday session (Gold / Forex): Active strictly between 07:00 UTC and 20:00 UTC 
-    # (Covers London open through New York afternoon close, avoiding dead Asian chop)
-    if 7 <= hour < 20:
-        return True
+    # Gold (GC=F): Weekdays only, between 07:00 UTC and 20:00 UTC
+    if ticker == "GC=F":
+        if weekday >= 5:  # Weekend closed for gold
+            return False
+        if 7 <= hour < 20:
+            return True
+        return False
 
-    return False
+    return True
 
 # --- AUTOMATIC NEWS CIRCUIT BREAKER ---
 def is_high_impact_news_time():
@@ -135,7 +141,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with Session & Price Action Filters."
+    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with 24/7 BTC & Broker-Safe Stop Buffers."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -217,7 +223,6 @@ def get_gold_strategy_signal(ticker):
         return None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
-    prev_c = df_m15.iloc[-3]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']):
         return None, None, None, None, None, None, None, None, None
 
@@ -227,12 +232,10 @@ def get_gold_strategy_signal(ticker):
     rsi = float(c['rsi14'])
     ema50 = float(c['ema50'])
 
-    # Price Action Confirmation: Check candle body momentum direction
     is_bullish_candle = close_p > open_p
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Aggressive optimized entries with candle confirmation
     if h1_bias == "BULLISH" and close_p > ema50 and (38 <= rsi <= 52) and is_bullish_candle:
         sig = "BUY"
     elif h1_bias == "BEARISH" and close_p < ema50 and (48 <= rsi <= 62) and is_bearish_candle:
@@ -244,21 +247,21 @@ def get_gold_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     spread_buffer = 1.0  
     
-    sl_distance = max(atr * 2.0, 12.00)  # Tighter professional stop loss for higher leverage efficiency
-    tp_distance = sl_distance * 1.8      # Faster aggressive profit target to lock gains quickly
+    # Enforce strict broker minimum distance buffer for Gold to prevent 'Invalid Stops' rejection
+    min_broker_stop_distance = max(atr * 2.0, 15.0)  
 
     if sig == "BUY":
         entry = live_price + spread_buffer
-        sl = entry - sl_distance
-        tp = entry + tp_distance
-        be_level = entry + (sl_distance * 0.9)
+        sl = entry - min_broker_stop_distance
+        tp = entry + (min_broker_stop_distance * 1.8)
+        be_level = entry + (min_broker_stop_distance * 0.9)
     else:
         entry = live_price - spread_buffer
-        sl = entry + sl_distance
-        tp = entry - tp_distance
-        be_level = entry - (sl_distance * 0.9)
+        sl = entry + min_broker_stop_distance
+        tp = entry - (min_broker_stop_distance * 1.8)
+        be_level = entry - (min_broker_stop_distance * 0.9)
 
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
+    rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
     return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SMART-GOLD ({h1_bias})"
 
 # --- AGGRESSIVE SMART STRATEGY 2: BITCOIN (BTCUSD) MOMENTUM BOUNCE ---
@@ -294,8 +297,8 @@ def get_bitcoin_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     spread_buffer = 15.0
     
-    sl_distance = max(atr * 1.8, 40.0)
-    tp_distance = abs(live_price - bb_middle) * 0.9  # Faster target lock
+    sl_distance = max(atr * 1.8, 50.0) # Safe buffer against crypto broker stop level limits
+    tp_distance = abs(live_price - bb_middle) * 0.9  
     if tp_distance < (sl_distance * 1.2):
         tp_distance = sl_distance * 1.6
 
@@ -327,7 +330,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **Session & News Filters Active.**", 
+            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **24/7 BTC & Broker-Safe Filters Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -355,13 +358,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    session_active = is_active_trading_session()
     
-    status_msg = "🟢 **Optimal (Scanning Active)**"
+    status_msg = "🟢 **Optimal (Scanning Active 24/7 for BTC & Weekdays for Gold)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
-    elif not session_active:
-        status_msg = "🌙 **Paused (Outside London/NY Sessions)**"
 
     if not active_trades:
         await update.message.reply_text(f"📊 **Smart Bot Status (Balance: ${current_account_balance}):**\nState: {status_msg}\nNo active trades.", parse_mode="Markdown")
@@ -450,20 +450,19 @@ async def signal_loop(app):
             else:
                 news_alert_sent = False
 
-            # 2. Session Time Filter Check
-            if not is_active_trading_session():
+            if len(active_trades) >= 2:  # Allow simultaneous monitoring if setup appears on both assets
                 await asyncio.sleep(60)
                 continue
 
-            if len(active_trades) >= 1:
-                await asyncio.sleep(60)
-                continue
+            # Scan both assets (BTC runs 24/7, Gold runs during valid weekday sessions)
+            all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
-            day = datetime.datetime.now(datetime.timezone.utc).weekday()
-            active_assets = WEEKDAY_ASSETS if day < 5 else WEEKEND_ASSETS
-
-            for ticker, label in active_assets.items():
+            for ticker, label in all_assets.items():
                 if label in active_trades:
+                    continue
+
+                # Session validation per asset
+                if not is_active_trading_session(ticker):
                     continue
 
                 sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
@@ -485,7 +484,7 @@ async def signal_loop(app):
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
                         f"⚖️ **Rec. Lot Size:** `{rec_lot}` *(Based on ${current_account_balance})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🛡️ *Session & Candle Action Verified.*"
+                        f"🛡️ *Broker Stop Levels & Candle Action Verified.*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -523,7 +522,7 @@ def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Smart Pro Sniper Bot Running 24/7 with Session Filters...")
+    logging.info("Smart Pro Sniper Bot Running with 24/7 BTC & Broker-Safe Stop Buffers...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
