@@ -30,7 +30,6 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 current_account_balance = 30.0  # Default baseline; update anytime via /balance command
 
 # --- TAILORED ASSET STRATEGY LIST ---
-# BTC runs 24/7, Gold runs Mon-Fri during active institutional sessions
 WEEKDAY_ASSETS = {
     "GC=F": "XAUUSD",  # Dedicated Gold Sniper (Mon-Fri)
     "BTC-USD": "BTCUSD" # Bitcoin active 24/7
@@ -48,15 +47,15 @@ authorized_users = set()
 active_trades = {}  # Tracks ongoing trades for live institutional management
 
 # --- STRATEGY PERFORMANCE MONITORING & AUTO-DIAGNOSIS ---
-trade_history = []  # Stores recent trade outcomes ("WIN" or "LOSS")
-MAX_HISTORY_LEN = 20  # Keeps track of the last 20 trades for trend analysis
-strategy_alert_sent = False  # Prevents spamming alerts
+trade_history = []  
+MAX_HISTORY_LEN = 20  
+strategy_alert_sent = False  
 
 def record_trade_outcome(outcome):
     global trade_history, strategy_alert_sent
     trade_history.append(outcome)
     if len(trade_history) > MAX_HISTORY_LEN:
-        trade_history.pop(0)  # Maintain rolling window
+        trade_history.pop(0)  
 
 def check_strategy_performance():
     global strategy_alert_sent
@@ -77,29 +76,22 @@ def check_strategy_performance():
         if not strategy_alert_sent:
             strategy_alert_sent = True
             reason = f"Detected a sustained drawdown ({losses_in_row} consecutive losses or heavy failure rate in recent window)."
-            suggestion = "Market volatility regime may have shifted. Consider letting me tweak your RSI boundary thresholds or EMA trend filters."
+            suggestion = "Market volatility regime may have shifted. Consider tweaking RSI boundary thresholds or EMA trend filters."
             return True, reason, suggestion
             
     return False, "", ""
 
 # --- PROFESSIONAL SESSION TIME-OF-DAY FILTER ---
 def is_active_trading_session(ticker):
-    """
-    Ensures assets trade during appropriate windows:
-    - BTC runs 24/7 (with weekend volatility checks handled by News Shield).
-    - Gold (GC=F) trades strictly during high-volume institutional windows (07:00 - 20:00 UTC on weekdays).
-    """
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     hour = now_utc.hour
 
-    # Crypto (BTC-USD): Allowed 24/7
     if ticker == "BTC-USD":
         return True
 
-    # Gold (GC=F): Weekdays only, between 07:00 UTC and 20:00 UTC
     if ticker == "GC=F":
-        if weekday >= 5:  # Weekend closed for gold
+        if weekday >= 5:  
             return False
         if 7 <= hour < 20:
             return True
@@ -111,7 +103,6 @@ def is_active_trading_session(ticker):
 def is_high_impact_news_time():
     try:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-        
         response = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=5)
         if response.status_code == 200:
             events = response.json()
@@ -212,7 +203,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- AGGRESSIVE SMART STRATEGY 1: GOLD (XAUUSD) TREND-PULLBACK ---
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY (High-Quality Pullback) ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -236,35 +227,35 @@ def get_gold_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    if h1_bias == "BULLISH" and close_p > ema50 and (38 <= rsi <= 52) and is_bullish_candle:
+    # Optimized Gold thresholds to capture reliable high-win-rate pullbacks
+    if h1_bias == "BULLISH" and close_p >= ema50 and (35 <= rsi <= 58) and is_bullish_candle:
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p < ema50 and (48 <= rsi <= 62) and is_bearish_candle:
+    elif h1_bias == "BEARISH" and close_p <= ema50 and (42 <= rsi <= 65) and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 1.0  
+    spread_buffer = 0.5  
     
-    # Enforce strict broker minimum distance buffer for Gold to prevent 'Invalid Stops' rejection
-    min_broker_stop_distance = max(atr * 2.0, 15.0)  
+    min_broker_stop_distance = max(atr * 1.5, 12.0)  
 
     if sig == "BUY":
-        entry = live_price + spread_buffer
-        sl = entry - min_broker_stop_distance
-        tp = entry + (min_broker_stop_distance * 1.8)
-        be_level = entry + (min_broker_stop_distance * 0.9)
+        entry = round(live_price + spread_buffer, 2)
+        sl = round(entry - min_broker_stop_distance, 2)
+        tp = round(entry + (min_broker_stop_distance * 1.6), 2)
+        be_level = round(entry + (min_broker_stop_distance * 0.8), 2)
     else:
-        entry = live_price - spread_buffer
-        sl = entry + min_broker_stop_distance
-        tp = entry - (min_broker_stop_distance * 1.8)
-        be_level = entry - (min_broker_stop_distance * 0.9)
+        entry = round(live_price - spread_buffer, 2)
+        sl = round(entry + min_broker_stop_distance, 2)
+        tp = round(entry - (min_broker_stop_distance * 1.6), 2)
+        be_level = round(entry - (min_broker_stop_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
     return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SMART-GOLD ({h1_bias})"
 
-# --- AGGRESSIVE SMART STRATEGY 2: BITCOIN (BTCUSD) MOMENTUM BOUNCE ---
+# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -286,32 +277,32 @@ def get_bitcoin_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    if close_p <= bb_lower and rsi < 38 and is_bullish_candle:
+    if close_p <= bb_lower and rsi < 40 and is_bullish_candle:
         sig = "BUY"
-    elif close_p >= bb_upper and rsi > 62 and is_bearish_candle:
+    elif close_p >= bb_upper and rsi > 60 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 15.0
+    spread_buffer = 10.0
     
-    sl_distance = max(atr * 1.8, 50.0) # Safe buffer against crypto broker stop level limits
-    tp_distance = abs(live_price - bb_middle) * 0.9  
-    if tp_distance < (sl_distance * 1.2):
-        tp_distance = sl_distance * 1.6
+    sl_distance = max(atr * 1.6, 40.0) 
+    tp_distance = abs(live_price - bb_middle) * 0.85  
+    if tp_distance < (sl_distance * 1.1):
+        tp_distance = sl_distance * 1.5
 
     if sig == "BUY":
-        entry = live_price + spread_buffer
-        sl = entry - sl_distance
-        tp = entry + tp_distance
-        be_level = entry + (sl_distance * 0.9)
+        entry = round(live_price + spread_buffer, 2)
+        sl = round(entry - sl_distance, 2)
+        tp = round(entry + tp_distance, 2)
+        be_level = round(entry + (sl_distance * 0.8), 2)
     else:
-        entry = live_price - spread_buffer
-        sl = entry + sl_distance
-        tp = entry - tp_distance
-        be_level = entry - (sl_distance * 0.9)
+        entry = round(live_price - spread_buffer, 2)
+        sl = round(entry + sl_distance, 2)
+        tp = round(entry - tp_distance, 2)
+        be_level = round(entry - (sl_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SMART-BTC-BOUNCE"
@@ -353,12 +344,19 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance}\n*To update:* `/balance 20`", parse_mode="Markdown")
 
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active_trades, last_signals
+    if update.effective_user.id not in authorized_users:
+        return
+    active_trades.clear()
+    last_signals.clear()
+    await update.message.reply_text("🔄 **Bot Reset Successful!**\nAll active trade states and cache cleared. Ready for fresh high-probability setups.", parse_mode="Markdown")
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    
     status_msg = "🟢 **Optimal (Scanning Active 24/7 for BTC & Weekdays for Gold)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
@@ -399,13 +397,13 @@ async def live_chart_guidance_loop(app):
 
                 current_price = float(df_live['Close'].iloc[-1])
                 trade_type = trade["type"]
-                entry = trade["entry"]
-                sl = trade["sl"]
                 tp = trade["tp"]
+                sl = trade["sl"]
                 be_level = trade["be_level"]
+                entry = trade["entry"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = f"🎯 **[AGGRESSIVE TARGET SECURED!]** - {label}\nPrice hit Take Profit at `{tp:.2f}`. Profit locked in! 🚀"
+                    msg = f"🎯 **[TARGET SECURED!]** - {label}\nPrice hit Take Profit at `{tp:.2f}`. Profit locked in! 🚀"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("WIN")
                     active_trades.pop(label, None)
@@ -433,7 +431,6 @@ async def signal_loop(app):
 
     while True:
         try:
-            # 1. News Circuit Breaker Check
             is_news, news_desc = is_high_impact_news_time()
             if is_news:
                 if not news_alert_sent:
@@ -450,18 +447,16 @@ async def signal_loop(app):
             else:
                 news_alert_sent = False
 
-            if len(active_trades) >= 2:  # Allow simultaneous monitoring if setup appears on both assets
+            if len(active_trades) >= 2:  
                 await asyncio.sleep(60)
                 continue
 
-            # Scan both assets (BTC runs 24/7, Gold runs during valid weekday sessions)
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
                 if label in active_trades:
                     continue
 
-                # Session validation per asset
                 if not is_active_trading_session(ticker):
                     continue
 
@@ -518,6 +513,8 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("reset", reset_command))
+    app.add_handler(CommandHandler("clear", reset_command))
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
