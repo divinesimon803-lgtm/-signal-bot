@@ -29,6 +29,11 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 # --- ACCOUNT BALANCE MANAGEMENT ---
 current_account_balance = 30.0  # Default baseline; update anytime via /balance command
 
+# --- DAILY LOSS LIMIT STATE ---
+today_date = datetime.datetime.now(datetime.timezone.utc).date()
+daily_losses_count = 0
+daily_loss_limit_alert_sent = False
+
 # --- TAILORED ASSET STRATEGY LIST ---
 WEEKDAY_ASSETS = {
     "GC=F": "XAUUSD",  # Dedicated Gold Sniper (Mon-Fri)
@@ -52,10 +57,19 @@ MAX_HISTORY_LEN = 20
 strategy_alert_sent = False  
 
 def record_trade_outcome(outcome):
-    global trade_history, strategy_alert_sent
+    global trade_history, strategy_alert_sent, today_date, daily_losses_count, daily_loss_limit_alert_sent
+    now_date = datetime.datetime.now(datetime.timezone.utc).date()
+    if now_date != today_date:
+        today_date = now_date
+        daily_losses_count = 0
+        daily_loss_limit_alert_sent = False
+
     trade_history.append(outcome)
     if len(trade_history) > MAX_HISTORY_LEN:
         trade_history.pop(0)  
+
+    if outcome == "LOSS":
+        daily_losses_count += 1
 
 def check_strategy_performance():
     global strategy_alert_sent
@@ -227,7 +241,6 @@ def get_gold_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Optimized Gold thresholds to capture reliable high-win-rate pullbacks
     if h1_bias == "BULLISH" and close_p >= ema50 and (35 <= rsi <= 58) and is_bullish_candle:
         sig = "BUY"
     elif h1_bias == "BEARISH" and close_p <= ema50 and (42 <= rsi <= 65) and is_bearish_candle:
@@ -345,12 +358,14 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance}\n*To update:* `/balance 20`", parse_mode="Markdown")
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_trades, last_signals
+    global active_trades, last_signals, daily_losses_count, daily_loss_limit_alert_sent
     if update.effective_user.id not in authorized_users:
         return
     active_trades.clear()
     last_signals.clear()
-    await update.message.reply_text("🔄 **Bot Reset Successful!**\nAll active trade states and cache cleared. Ready for fresh high-probability setups.", parse_mode="Markdown")
+    daily_losses_count = 0
+    daily_loss_limit_alert_sent = False
+    await update.message.reply_text("🔄 **Bot Reset Successful!**\nAll active trade states, cache, and daily loss counters reset.", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
@@ -360,12 +375,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = "🟢 **Optimal (Scanning Active 24/7 for BTC & Weekdays for Gold)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
+    elif daily_losses_count >= 3:
+        status_msg = f"🛑 **Paused (Daily Loss Limit Reached: {daily_losses_count}/3)**"
 
     if not active_trades:
-        await update.message.reply_text(f"📊 **Smart Bot Status (Balance: ${current_account_balance}):**\nState: {status_msg}\nNo active trades.", parse_mode="Markdown")
+        await update.message.reply_text(f"📊 **Smart Bot Status (Balance: ${current_account_balance} | Losses Today: {daily_losses_count}/3):**\nState: {status_msg}\nNo active trades.", parse_mode="Markdown")
         return
     
-    msg = f"📊 **Active Portfolio Status (Balance: ${current_account_balance}):**\nState: {status_msg}\n━━━━━━━━━━━━━━━━━━━\n"
+    msg = f"📊 **Active Portfolio Status (Balance: ${current_account_balance} | Losses Today: {daily_losses_count}/3):**\nState: {status_msg}\n━━━━━━━━━━━━━━━━━━━\n"
     for label, trade in active_trades.items():
         y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
         df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
@@ -426,11 +443,31 @@ async def live_chart_guidance_loop(app):
 
 # --- SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
-    global last_signals, active_trades
+    global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent
     news_alert_sent = False
 
     while True:
         try:
+            # Daily Loss Limit & Date Reset Check
+            now_date = datetime.datetime.now(datetime.timezone.utc).date()
+            if now_date != today_date:
+                today_date = now_date
+                daily_losses_count = 0
+                daily_loss_limit_alert_sent = False
+
+            if daily_losses_count >= 3:
+                if not daily_loss_limit_alert_sent:
+                    target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+                    if target_user and authorized_users:
+                        await app.bot.send_message(
+                            chat_id=target_user,
+                            text="🛑 **[DAILY LOSS LIMIT REACHED]**\n3 losses recorded today. Automated trading is paused until tomorrow to protect capital.",
+                            parse_mode="Markdown"
+                        )
+                    daily_loss_limit_alert_sent = True
+                await asyncio.sleep(60)
+                continue
+
             is_news, news_desc = is_high_impact_news_time()
             if is_news:
                 if not news_alert_sent:
