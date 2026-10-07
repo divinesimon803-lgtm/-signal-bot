@@ -146,7 +146,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with 24/7 BTC & Broker-Safe Stop Buffers."
+    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with Auto-Reset Watchdogs."
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -217,7 +217,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- OPTIMISED GOLD (XAUUSD) STRATEGY (High-Quality Pullback) ---
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -251,7 +251,6 @@ def get_gold_strategy_signal(ticker):
 
     live_price = float(df_m15['Close'].iloc[-1])
     spread_buffer = 0.5  
-    
     min_broker_stop_distance = max(atr * 1.5, 12.0)  
 
     if sig == "BUY":
@@ -334,7 +333,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **24/7 BTC & Broker-Safe Filters Active.**", 
+            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **Auto-Reset Watchdogs Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -357,22 +356,12 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance}\n*To update:* `/balance 20`", parse_mode="Markdown")
 
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_trades, last_signals, daily_losses_count, daily_loss_limit_alert_sent
-    if update.effective_user.id not in authorized_users:
-        return
-    active_trades.clear()
-    last_signals.clear()
-    daily_losses_count = 0
-    daily_loss_limit_alert_sent = False
-    await update.message.reply_text("🔄 **Bot Reset Successful!**\nAll active trade states, cache, and daily loss counters reset.", parse_mode="Markdown")
-
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 **Optimal (Scanning Active 24/7 for BTC & Weekdays for Gold)**"
+    status_msg = "🟢 **Optimal (Scanning Active 24/7)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
     elif daily_losses_count >= 3:
@@ -395,18 +384,27 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- REAL-TIME GUIDANCE LOOP ---
+# --- REAL-TIME GUIDANCE LOOP WITH AUTO-EXPIRY WATCHDOG ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
-        await asyncio.sleep(10)
-        if not active_trades:
-            continue
+        try:
+            await asyncio.sleep(10)
+            if not active_trades:
+                continue
 
-        target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+            target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+            current_time = datetime.datetime.now(datetime.timezone.utc)
 
-        for label, trade in list(active_trades.items()):
-            try:
+            for label, trade in list(active_trades.items()):
+                # Auto-expiry safety watch: if trade stays stuck > 4 hours, clear it automatically
+                trade_age = (current_time - trade.get("timestamp", current_time)).total_seconds()
+                if trade_age > 14400: # 4 hours
+                    active_trades.pop(label, None)
+                    if target_user and authorized_users:
+                        await app.bot.send_message(chat_id=target_user, text=f"🔄 **[AUTO-RESET]** Stale trade state cleared for {label}.", parse_mode="Markdown")
+                    continue
+
                 y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
                 df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
                 if df_live is None or len(df_live) < 10:
@@ -438,10 +436,11 @@ async def live_chart_guidance_loop(app):
                     msg = f"🛡 **[PROTECT TRADE]** - {label}\nMove Stop Loss to entry (`{entry:.2f}`) to make this trade risk-free."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
-            except Exception as e:
-                logging.error(f"Guidance error for {label}: {e}")
+        except Exception as e:
+            logging.error(f"Guidance loop error: {e}")
+            await asyncio.sleep(10)
 
-# --- SIGNAL SCANNER LOOP ---
+# --- SIGNAL SCANNER LOOP WITH CRASH-PROOF WATCHDOG ---
 async def signal_loop(app):
     global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent
     news_alert_sent = False
@@ -454,6 +453,7 @@ async def signal_loop(app):
                 today_date = now_date
                 daily_losses_count = 0
                 daily_loss_limit_alert_sent = False
+                last_signals.clear()
 
             if daily_losses_count >= 3:
                 if not daily_loss_limit_alert_sent:
@@ -528,10 +528,12 @@ async def signal_loop(app):
                         "sl": sl,
                         "tp": tp,
                         "be_level": be_level,
-                        "be_hit": False
+                        "be_hit": False,
+                        "timestamp": datetime.datetime.now(datetime.timezone.utc)
                     }
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
+            await asyncio.sleep(15)
 
         await asyncio.sleep(20)
 
@@ -550,13 +552,11 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(CommandHandler("clear", reset_command))
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Smart Pro Sniper Bot Running with 24/7 BTC & Broker-Safe Stop Buffers...")
+    logging.info("Smart Pro Sniper Bot Running with Auto-Reset Watchdogs...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
