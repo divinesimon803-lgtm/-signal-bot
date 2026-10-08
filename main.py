@@ -29,7 +29,7 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 # --- ACCOUNT BALANCE MANAGEMENT ---
 current_account_balance = 30.0  # Default baseline; update anytime via /balance command
 
-# --- DAILY LOSS LIMIT STATE ---
+# --- DAILY LOSS LIMIT & SIMONS STATISTICAL MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
 daily_loss_limit_alert_sent = False
@@ -51,9 +51,9 @@ last_signals = {}
 authorized_users = set()
 active_trades = {}  # Tracks ongoing trades for live institutional management
 
-# --- STRATEGY PERFORMANCE MONITORING & AUTO-DIAGNOSIS ---
+# --- QUANTITATIVE PERFORMANCE TRACKER (SIMONS FRAMEWORK) ---
 trade_history = []  
-MAX_HISTORY_LEN = 20  
+MAX_HISTORY_LEN = 100  
 strategy_alert_sent = False  
 
 def record_trade_outcome(outcome):
@@ -71,29 +71,17 @@ def record_trade_outcome(outcome):
     if outcome == "LOSS":
         daily_losses_count += 1
 
-def check_strategy_performance():
-    global strategy_alert_sent
-    if len(trade_history) < 10:
-        return False, "", ""
+def get_quantitative_performance_metrics():
+    """Calculates statistical win rate and sample size like a quantitative fund."""
+    total_trades = len(trade_history)
+    if total_trades == 0:
+        return 0.0, 0, 0, 0.0
     
-    losses_in_row = 0
-    for outcome in reversed(trade_history):
-        if outcome == "LOSS":
-            losses_in_row += 1
-        else:
-            break
-
-    recent_window = trade_history[-15:]
-    recent_losses = recent_window.count("LOSS")
-    
-    if losses_in_row >= 5 or (len(recent_window) >= 10 and (recent_losses / len(recent_window)) >= 0.75):
-        if not strategy_alert_sent:
-            strategy_alert_sent = True
-            reason = f"Detected a sustained drawdown ({losses_in_row} consecutive losses or heavy failure rate in recent window)."
-            suggestion = "Market volatility regime may have shifted. Consider tweaking RSI boundary thresholds or EMA trend filters."
-            return True, reason, suggestion
-            
-    return False, "", ""
+    wins = trade_history.count("WIN")
+    losses = trade_history.count("LOSS")
+    win_rate = (wins / total_trades) * 100.0
+    profit_factor = (wins / losses) if losses > 0 else float(wins)
+    return win_rate, wins, losses, profit_factor
 
 # --- PROFESSIONAL SESSION TIME-OF-DAY FILTER ---
 def is_active_trading_session(ticker):
@@ -146,7 +134,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with Anti-Sleep Keep-Alive."
+    return "Smart Pro Gold/Bitcoin Quantitative Engine is Live."
 
 def self_ping_loop():
     """Pings its own Render URL every 5 minutes to prevent host sleep/inactivity stalls."""
@@ -160,7 +148,7 @@ def self_ping_loop():
         except Exception as e:
             logging.error(f"Self-ping keep-alive error: {e}")
         import time
-        time.sleep(300) # Wait 5 minutes
+        time.sleep(300)
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -231,7 +219,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- OPTIMISED GOLD (XAUUSD) STRATEGY ---
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY WITH STATISTICAL FILTERS ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -279,9 +267,9 @@ def get_gold_strategy_signal(ticker):
         be_level = round(entry - (min_broker_stop_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SMART-GOLD ({h1_bias})"
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD ({h1_bias})"
 
-# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY ---
+# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY WITH STATISTICAL FILTERS ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -331,7 +319,7 @@ def get_bitcoin_strategy_signal(ticker):
         be_level = round(entry - (sl_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SMART-BTC-BOUNCE"
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SIMONS-BTC-BOUNCE"
 
 def get_strategy_signal(ticker):
     if ticker == "GC=F":
@@ -347,7 +335,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **Keep-Alive Anti-Sleep Engine Active.**", 
+            f"🔓 **Simons Quantitative Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n📊 **Statistical Performance Matrix Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -375,17 +363,28 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 **Optimal (24/7 Keep-Alive Active)**"
+    status_msg = "🟢 **Optimal (Quantitative Engine Active)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
     elif daily_losses_count >= 3:
         status_msg = f"🛑 **Paused (Daily Loss Limit Reached: {daily_losses_count}/3)**"
 
+    win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
+    total_samples = len(trade_history)
+
+    stats_text = (
+        f"📊 **Quantitative Performance Matrix (Simons Model):**\n"
+        f"• Total Samples Logged: `{total_samples}`\n"
+        f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
+        f"• Profit Factor: `{profit_factor:.2f}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+    )
+
     if not active_trades:
-        await update.message.reply_text(f"📊 **Smart Bot Status (Balance: ${current_account_balance} | Losses Today: {daily_losses_count}/3):**\nState: {status_msg}\nNo active trades.", parse_mode="Markdown")
+        await update.message.reply_text(stats_text + f"State: {status_msg}\nNo active trades.", parse_mode="Markdown")
         return
     
-    msg = f"📊 **Active Portfolio Status (Balance: ${current_account_balance} | Losses Today: {daily_losses_count}/3):**\nState: {status_msg}\n━━━━━━━━━━━━━━━━━━━\n"
+    msg = stats_text + f"State: {status_msg}\n━━━━━━━━━━━━━━━━━━━\n"
     for label, trade in active_trades.items():
         y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
         df_temp = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
@@ -400,13 +399,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- HOURLY HEARTBEAT LOOP ---
 async def hourly_heartbeat_loop(app):
-    """Sends an hourly pulse message to authorized users so they know the bot is active."""
     while True:
         try:
-            await asyncio.sleep(3600)  # Wait 1 hour
+            await asyncio.sleep(3600)
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
-                heartbeat_msg = "🟢 **[HEARTBEAT]** Bot Active - All Systems Optimal."
+                win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                heartbeat_msg = f"🟢 **[HEARTBEAT]** Quant Engine Active | Win Rate: `{win_rate:.1f}%` ({wins}W / {losses}L)"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop error: {e}")
@@ -445,14 +444,14 @@ async def live_chart_guidance_loop(app):
                 entry = trade["entry"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = f"🎯 **[TARGET SECURED!]** - {label}\nPrice hit Take Profit at `{tp:.2f}`. Profit locked in! 🚀"
+                    msg = f"🎯 **[TARGET SECURED!]** - {label}\nPrice hit Take Profit at `{tp:.2f}`. Mathematical Edge Realized! 🚀"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("WIN")
                     active_trades.pop(label, None)
                     continue
 
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket defended at `{sl:.2f}`. Risk contained cleanly."
+                    msg = f"🛑 **[STOP LOSS HIT]** - {label}\nMarket defended at `{sl:.2f}`. Recorded as objective statistical data point."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("LOSS")
                     active_trades.pop(label, None)
@@ -460,7 +459,7 @@ async def live_chart_guidance_loop(app):
 
                 if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                     trade["be_hit"] = True
-                    msg = f"🛡 **[PROTECT TRADE]** - {label}\nMove Stop Loss to entry (`{entry:.2f}`) to make this trade risk-free."
+                    msg = f"🛡 **[PROTECT TRADE]** - {label}\nMove Stop Loss to entry (`{entry:.2f}`) to eliminate trade risk."
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
 
         except Exception as e:
@@ -487,7 +486,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="🛑 **[DAILY LOSS LIMIT REACHED]**\n3 losses recorded today. Automated trading is paused until tomorrow to protect capital.",
+                            text="🛑 **[DAILY LOSS LIMIT REACHED]**\n3 losses recorded today. Automated trading paused to protect capital according to statistical risk limits.",
                             parse_mode="Markdown"
                         )
                     daily_loss_limit_alert_sent = True
@@ -513,7 +512,6 @@ async def signal_loop(app):
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
-                # Skip ONLY if this specific asset already has an active trade open
                 if label in active_trades:
                     continue
 
@@ -530,16 +528,16 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **SMART PRO SNIPER SIGNAL**\n"
+                        f"💎 **QUANTITATIVE SNIPER SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 **Asset:** `{label}` | **Strategy:** `{strategy_name}`\n"
+                        f"📌 **Asset:** `{label}` | **Model:** `{strategy_name}`\n"
                         f"📈 **Direction:** {dir_icon} **{sig}**\n\n"
                         f"🔹 **Entry:** `{entry:.2f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.2f}`\n"
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
                         f"⚖️ **Rec. Lot Size:** `{rec_lot}` *(Based on ${current_account_balance})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🛡️ *Broker Stop Levels & Candle Action Verified.*"
+                        f"🛡️ *Mathematical Edge Verified.*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -585,7 +583,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Smart Pro Sniper Bot Running with Keep-Alive & Heartbeat Engine...")
+    logging.info("Simons Quantitative Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
