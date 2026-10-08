@@ -206,6 +206,11 @@ def fetch_data(ticker, interval, period="5d"):
         df['bb_lower'] = bb.bollinger_lband()
         df['bb_middle'] = bb.bollinger_mavg()
 
+        # --- Z-SCORE CALCULATION (STATISTICAL MEAN REVERSION METRIC) ---
+        rolling_mean = close_series.rolling(window=20).mean()
+        rolling_std = close_series.rolling(window=20).std()
+        df['z_score'] = (close_series - rolling_mean) / rolling_std
+
         return df
     except Exception as e:
         logging.error(f"Data fetch error for {ticker}: {e}")
@@ -234,13 +239,12 @@ def is_market_in_random_chop(df_m15):
         return False
     recent_atr = df_m15['atr14'].iloc[-1]
     avg_atr = df_m15['atr14'].rolling(window=20).mean().iloc[-1]
-    # If volatility has completely compressed or spiked abnormally, flag as chop regime
     if pd.notna(recent_atr) and pd.notna(avg_atr):
         if recent_atr < (avg_atr * 0.4): # Extremely low volatility chop
             return True
     return False
 
-# --- OPTIMISED GOLD (XAUUSD) STRATEGY WITH MULTI-TIMEFRAME & REGIME CHECKS ---
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY WITH Z-SCORE & REGIME CHECKS ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -250,12 +254,11 @@ def get_gold_strategy_signal(ticker):
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None, None
 
-    # Check Volatility Regime (Upgrade 3)
     if is_market_in_random_chop(df_m15):
         return None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
-    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']):
+    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema50']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
@@ -263,14 +266,16 @@ def get_gold_strategy_signal(ticker):
     open_p = float(c['Open'])
     rsi = float(c['rsi14'])
     ema50 = float(c['ema50'])
+    z_score = float(c['z_score'])
 
     is_bullish_candle = close_p > open_p
     is_bearish_candle = close_p < open_p
 
     sig = None
-    if h1_bias == "BULLISH" and close_p >= ema50 and (35 <= rsi <= 58) and is_bullish_candle:
+    # Enhanced with Z-Score statistical boundary gating
+    if h1_bias == "BULLISH" and close_p >= ema50 and (35 <= rsi <= 58) and z_score <= -1.2 and is_bullish_candle:
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p <= ema50 and (42 <= rsi <= 65) and is_bearish_candle:
+    elif h1_bias == "BEARISH" and close_p <= ema50 and (42 <= rsi <= 65) and z_score >= 1.2 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
@@ -292,9 +297,9 @@ def get_gold_strategy_signal(ticker):
         be_level = round(entry - (min_broker_stop_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD-MATRIX ({h1_bias})"
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD-ZSCORE ({h1_bias})"
 
-# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY WITH MULTI-TIMEFRAME & REGIME CHECKS ---
+# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY WITH Z-SCORE & REGIME CHECKS ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -304,7 +309,7 @@ def get_bitcoin_strategy_signal(ticker):
         return None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
-    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['bb_lower']) or pd.isna(c['bb_upper']):
+    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['bb_lower']) or pd.isna(c['bb_upper']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
@@ -314,14 +319,15 @@ def get_bitcoin_strategy_signal(ticker):
     bb_lower = float(c['bb_lower'])
     bb_upper = float(c['bb_upper'])
     bb_middle = float(c['bb_middle'])
+    z_score = float(c['z_score'])
 
     is_bullish_candle = close_p > open_p
     is_bearish_candle = close_p < open_p
 
     sig = None
-    if close_p <= bb_lower and rsi < 40 and is_bullish_candle:
+    if close_p <= bb_lower and rsi < 40 and z_score <= -1.5 and is_bullish_candle:
         sig = "BUY"
-    elif close_p >= bb_upper and rsi > 60 and is_bearish_candle:
+    elif close_p >= bb_upper and rsi > 60 and z_score >= 1.5 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
@@ -347,7 +353,7 @@ def get_bitcoin_strategy_signal(ticker):
         be_level = round(entry - (sl_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SIMONS-BTC-MATRIX-BOUNCE"
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SIMONS-BTC-ZSCORE-BOUNCE"
 
 def get_strategy_signal(ticker):
     if ticker == "GC=F":
@@ -363,7 +369,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Simons Quantitative Matrix Bot Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **Alternative Data, Matrix Correlation & Volatility Regimes Active.**", 
+            f"🔓 **Simons Quantitative Z-Score Bot Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **Z-Score Statistical Mean Reversion Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -391,7 +397,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 **Optimal (Matrix & Regime Engine Active)**"
+    status_msg = "🟢 **Optimal (Z-Score Engine Active)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Sentiment Shield):** {news_reason}"
     elif daily_losses_count >= 3:
@@ -401,7 +407,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_samples = len(trade_history)
 
     stats_text = (
-        f"📊 **Quantitative Performance Matrix (Simons Advanced Model):**\n"
+        f"📊 **Quantitative Performance Matrix (Z-Score Model):**\n"
         f"• Total Samples Logged: `{total_samples}`\n"
         f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
@@ -434,7 +440,7 @@ async def hourly_heartbeat_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                heartbeat_msg = f"🟢 **[HEARTBEAT]** Matrix Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
+                heartbeat_msg = f"🟢 **[HEARTBEAT]** Z-Score Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop error: {e}")
@@ -473,7 +479,7 @@ async def live_chart_guidance_loop(app):
                 entry = trade["entry"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = f"🎯 **[BASKET TARGET SECURED!]** - {label}\nAll tranches hit Take Profit at `{tp:.2f}`. Edge Realized! 🚀"
+                    msg = f"🎯 **[BASKET TARGET SECURED!]** - {label}\nAll tranches hit Take Profit at `{tp:.2f}`. Statistical Edge Realized! 🚀"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("WIN")
                     active_trades.pop(label, None)
@@ -558,7 +564,7 @@ async def signal_loop(app):
                     num_tranches = 3  # Multi-tranche quantitative scaling
 
                     signal_text = (
-                        f"💎 **QUANTITATIVE MATRIX SIGNAL**\n"
+                        f"💎 **QUANTITATIVE Z-SCORE SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** `{label}` | **Model:** `{strategy_name}`\n"
                         f"📈 **Direction:** {dir_icon} **{sig}** ({num_tranches} Legs)\n\n"
@@ -567,7 +573,7 @@ async def signal_loop(app):
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
                         f"⚖️ **Lot Per Tranche:** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🛡️ *Matrix Correlation & Regime Verified.*"
+                        f"🛡️ *Z-Score & Statistical Edge Verified.*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -614,7 +620,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Simons Quantitative Matrix Engine Running...")
+    logging.info("Simons Quantitative Z-Score Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
