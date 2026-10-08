@@ -398,6 +398,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
+# --- HOURLY HEARTBEAT LOOP ---
+async def hourly_heartbeat_loop(app):
+    """Sends an hourly pulse message to authorized users so they know the bot is active."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Wait 1 hour
+            target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+            if target_user and authorized_users:
+                heartbeat_msg = "🟢 **[HEARTBEAT]** Bot Active - All Systems Optimal."
+                await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Heartbeat loop error: {e}")
+            await asyncio.sleep(60)
+
 # --- REAL-TIME GUIDANCE LOOP WITH AUTO-EXPIRY WATCHDOG ---
 async def live_chart_guidance_loop(app):
     global active_trades
@@ -552,6 +566,7 @@ async def signal_loop(app):
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
     asyncio.create_task(live_chart_guidance_loop(app))
+    asyncio.create_task(hourly_heartbeat_loop(app))
 
 # --- MAIN ENTRY ---
 def main():
@@ -573,7 +588,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Smart Pro Sniper Bot Running with Keep-Alive Engine...")
+    logging.info("Smart Pro Sniper Bot Running with Keep-Alive & Heartbeat Engine...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
