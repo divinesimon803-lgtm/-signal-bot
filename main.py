@@ -510,13 +510,10 @@ async def signal_loop(app):
             else:
                 news_alert_sent = False
 
-            if len(active_trades) >= 2:  
-                await asyncio.sleep(60)
-                continue
-
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
+                # Skip ONLY if this specific asset already has an active trade open
                 if label in active_trades:
                     continue
 
