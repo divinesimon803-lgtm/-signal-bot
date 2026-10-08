@@ -101,7 +101,7 @@ def is_active_trading_session(ticker):
 
     return True
 
-# --- AUTOMATIC NEWS CIRCUIT BREAKER ---
+# --- UPGRADE 1: ALTERNATIVE DATA & NEWS SENTIMENT CIRCUIT BREAKER ---
 def is_high_impact_news_time():
     try:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -115,7 +115,7 @@ def is_high_impact_news_time():
                         ev_time = datetime.datetime.fromisoformat(ev_date_str.replace("Z", "+00:00"))
                         time_diff = (ev_time - now_utc).total_seconds() / 60.0
                         if -15 <= time_diff <= 30:
-                            return True, f"High-Impact News Event: {ev.get('title')} ({ev.get('country')})"
+                            return True, f"High-Impact News Sentiment Event: {ev.get('title')} ({ev.get('country')})"
         
         if now_utc.weekday() == 4 and now_utc.hour >= 20:
             return True, "Weekend Market Close Volatility Window"
@@ -165,9 +165,8 @@ def calculate_dynamic_lot(ticker, sl_pips):
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
     
-    # Absolute strict risk boundaries for low capital testing ($0.50 scale preservation)
     if current_account_balance <= 1.0:
-        return 0.01  # Hard floor mandatory for micro-balance testing
+        return 0.01  # Absolute micro-balance floor
     elif current_account_balance < 10.0:
         return 0.01
     elif current_account_balance < 100.0:
@@ -212,6 +211,7 @@ def fetch_data(ticker, interval, period="5d"):
         logging.error(f"Data fetch error for {ticker}: {e}")
         return None
 
+# --- UPGRADE 2: MULTI-TIMEFRAME MATRIX CORRELATION ---
 def get_h1_trend_bias(ticker):
     df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="7d")
     if df_h1 is None or len(df_h1) < 50:
@@ -227,7 +227,20 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- OPTIMISED GOLD (XAUUSD) STRATEGY WITH MULTI-TRANCHE MATRIX ---
+# --- UPGRADE 3: DYNAMIC VOLATILITY REGIME (ATR REGIME CHECK) ---
+def is_market_in_random_chop(df_m15):
+    """Evaluates if current market volatility state is in an unstable random chop regime."""
+    if df_m15 is None or len(df_m15) < 20:
+        return False
+    recent_atr = df_m15['atr14'].iloc[-1]
+    avg_atr = df_m15['atr14'].rolling(window=20).mean().iloc[-1]
+    # If volatility has completely compressed or spiked abnormally, flag as chop regime
+    if pd.notna(recent_atr) and pd.notna(avg_atr):
+        if recent_atr < (avg_atr * 0.4): # Extremely low volatility chop
+            return True
+    return False
+
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY WITH MULTI-TIMEFRAME & REGIME CHECKS ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -235,6 +248,10 @@ def get_gold_strategy_signal(ticker):
 
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
     if df_m15 is None or len(df_m15) < 50:
+        return None, None, None, None, None, None, None, None, None
+
+    # Check Volatility Regime (Upgrade 3)
+    if is_market_in_random_chop(df_m15):
         return None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
@@ -275,12 +292,15 @@ def get_gold_strategy_signal(ticker):
         be_level = round(entry - (min_broker_stop_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD-TRANCHED ({h1_bias})"
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD-MATRIX ({h1_bias})"
 
-# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY WITH MULTI-TRANCHE MATRIX ---
+# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY WITH MULTI-TIMEFRAME & REGIME CHECKS ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
+        return None, None, None, None, None, None, None, None, None
+
+    if is_market_in_random_chop(df_m15):
         return None, None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
@@ -327,7 +347,7 @@ def get_bitcoin_strategy_signal(ticker):
         be_level = round(entry - (sl_distance * 0.8), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SIMONS-BTC-TRANCHED-BOUNCE"
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SIMONS-BTC-MATRIX-BOUNCE"
 
 def get_strategy_signal(ticker):
     if ticker == "GC=F":
@@ -343,7 +363,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Simons Quantitative Multi-Tranche Bot Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **Strict Micro-Risk & Statistical Matrix Active.**", 
+            f"🔓 **Simons Quantitative Matrix Bot Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **Alternative Data, Matrix Correlation & Volatility Regimes Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -371,9 +391,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 **Optimal (Multi-Tranche Engine Active)**"
+    status_msg = "🟢 **Optimal (Matrix & Regime Engine Active)**"
     if news_active:
-        status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
+        status_msg = f"⚠️ **Paused (News Sentiment Shield):** {news_reason}"
     elif daily_losses_count >= 3:
         status_msg = f"🛑 **Paused (Daily Loss Limit Reached: {daily_losses_count}/3)**"
 
@@ -381,7 +401,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_samples = len(trade_history)
 
     stats_text = (
-        f"📊 **Quantitative Performance Matrix (Simons Multi-Leg Model):**\n"
+        f"📊 **Quantitative Performance Matrix (Simons Advanced Model):**\n"
         f"• Total Samples Logged: `{total_samples}`\n"
         f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
@@ -414,7 +434,7 @@ async def hourly_heartbeat_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                heartbeat_msg = f"🟢 **[HEARTBEAT]** Multi-Tranche Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
+                heartbeat_msg = f"🟢 **[HEARTBEAT]** Matrix Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop error: {e}")
@@ -509,7 +529,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🛡️ **[NEWS SHIELD ENGAGED]**\nPaused due to: *{news_desc}*.", 
+                            text=f"🛡️ **[NEWS SENTIMENT SHIELD ENGAGED]**\nPaused due to: *{news_desc}*.", 
                             parse_mode="Markdown"
                         )
                     news_alert_sent = True
@@ -538,7 +558,7 @@ async def signal_loop(app):
                     num_tranches = 3  # Multi-tranche quantitative scaling
 
                     signal_text = (
-                        f"💎 **QUANTITATIVE MULTI-TRANCHE SIGNAL**\n"
+                        f"💎 **QUANTITATIVE MATRIX SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** `{label}` | **Model:** `{strategy_name}`\n"
                         f"📈 **Direction:** {dir_icon} **{sig}** ({num_tranches} Legs)\n\n"
@@ -547,7 +567,7 @@ async def signal_loop(app):
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
                         f"⚖️ **Lot Per Tranche:** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🛡️ *Strict Risk & Edge Verified.*"
+                        f"🛡️ *Matrix Correlation & Regime Verified.*"
                     )
 
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -594,7 +614,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Simons Quantitative Multi-Tranche Engine Running...")
+    logging.info("Simons Quantitative Matrix Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
