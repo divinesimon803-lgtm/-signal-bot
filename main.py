@@ -141,12 +141,26 @@ def is_high_impact_news_time():
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEB SERVER ---
+# --- FLASK WEB SERVER & KEEP-ALIVE PING ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with Auto-Reset Watchdogs."
+    return "Smart Pro Gold/Bitcoin Sniper Engine is Live with Anti-Sleep Keep-Alive."
+
+def self_ping_loop():
+    """Pings its own Render URL every 5 minutes to prevent host sleep/inactivity stalls."""
+    app_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not app_url:
+        app_url = "https://signal-bot-t8ud.onrender.com"
+    
+    while True:
+        try:
+            requests.get(app_url, timeout=10)
+        except Exception as e:
+            logging.error(f"Self-ping keep-alive error: {e}")
+        import time
+        time.sleep(300) # Wait 5 minutes
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -333,7 +347,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **Auto-Reset Watchdogs Active.**", 
+            f"🔓 **Smart Pro Sniper Bot Online.**\n💰 Balance Mode: **${current_account_balance}**\n🛡️ **Keep-Alive Anti-Sleep Engine Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -361,7 +375,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 **Optimal (Scanning Active 24/7)**"
+    status_msg = "🟢 **Optimal (24/7 Keep-Alive Active)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Shield):** {news_reason}"
     elif daily_losses_count >= 3:
@@ -397,7 +411,6 @@ async def live_chart_guidance_loop(app):
             current_time = datetime.datetime.now(datetime.timezone.utc)
 
             for label, trade in list(active_trades.items()):
-                # Auto-expiry safety watch: if trade stays stuck > 4 hours, clear it automatically
                 trade_age = (current_time - trade.get("timestamp", current_time)).total_seconds()
                 if trade_age > 14400: # 4 hours
                     active_trades.pop(label, None)
@@ -447,7 +460,6 @@ async def signal_loop(app):
 
     while True:
         try:
-            # Daily Loss Limit & Date Reset Check
             now_date = datetime.datetime.now(datetime.timezone.utc).date()
             if now_date != today_date:
                 today_date = now_date
@@ -553,10 +565,15 @@ def main():
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
 
+    # Start Flask Web Server
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    logging.info("Smart Pro Sniper Bot Running with Auto-Reset Watchdogs...")
+    # Start Keep-Alive Anti-Sleep Self-Ping Engine
+    ping_thread = Thread(target=self_ping_loop, daemon=True)
+    ping_thread.start()
+
+    logging.info("Smart Pro Sniper Bot Running with Keep-Alive Engine...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
