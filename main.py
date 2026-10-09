@@ -7,7 +7,6 @@ import pandas as pd
 import requests
 import ta
 import yfinance as yf
-import MetaTrader5 as mt5
 from flask import Flask
 from threading import Thread
 from telegram import Update
@@ -28,20 +27,8 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
 
 RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile per basket
 
-# --- METATRADER 5 ACCOUNT AUTO-SYNC ---
-def get_live_mt5_account_balance():
-    """Fetches real-time account balance directly from MT5 to prevent manual input errors."""
-    try:
-        if not mt5.initialize():
-            logging.error(f"MT5 Initialization failed: {mt5.last_error()}")
-            return 10.0  # Safe fallback default
-        
-        acc_info = mt5.account_info()
-        if acc_info is not None:
-            return float(acc_info.balance)
-    except Exception as e:
-        logging.error(f"Error fetching live MT5 balance: {e}")
-    return 10.0
+# --- ACCOUNT BALANCE MANAGEMENT ---
+current_account_balance = 10.0  # Managed securely via Telegram /balance command
 
 # --- DAILY LOSS LIMIT & SIMONS STATISTICAL MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
@@ -203,21 +190,21 @@ def run_flask():
 
 # --- STRICT INSTITUTIONAL RISK POSITION SIZING ---
 def calculate_dynamic_lot(ticker, sl_pips, current_atr):
-    live_balance = get_live_mt5_account_balance()
-    risk_amount = live_balance * RISK_PER_TRADE_PCT
+    global current_account_balance
+    risk_amount = current_account_balance * RISK_PER_TRADE_PCT
     pip_value = 1.0
 
     if sl_pips <= 0:
         return 0.01
 
-    # Split risk evenly across 3 tranches (legs) to protect the account
+    # Split risk evenly across 3 tranches (legs) to protect the account safely
     tranche_risk_amount = risk_amount / 3.0
     volatility_scalar = 1.0 / max(current_atr, 1.0)
     calculated_lot = round((tranche_risk_amount / (sl_pips * pip_value)) * (1.0 + volatility_scalar * 0.1), 2)
     
-    if live_balance <= 10.0:
+    if current_account_balance <= 10.0:
         return 0.01  # Absolute micro-balance capital guard
-    elif live_balance < 100.0:
+    elif current_account_balance < 100.0:
         return max(0.01, min(calculated_lot, 0.05))
     else:
         return max(0.01, min(calculated_lot, 2.0))
@@ -416,20 +403,29 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
-        live_bal = get_live_mt5_account_balance()
         await update.message.reply_text(
-            f"🔓 **Divine Simon's HF Engine Online.**\n💰 Live MT5 Balance Auto-Sync: **${live_bal:.2f}**\n📊 **High-Frequency Z-Score & Strict Risk Guard Active.**", 
+            f"🔓 **Divine Simon's HF Engine Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **High-Frequency Z-Score & Strict Risk Guard Active.**", 
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global current_account_balance
     if update.effective_user.id not in authorized_users:
         return
     
-    live_bal = get_live_mt5_account_balance()
-    await update.message.reply_text(f"💰 **Live MT5 Account Balance:** ${live_bal:.2f}\n*Risk managed automatically per basket.*", parse_mode="Markdown")
+    args = context.args
+    if args:
+        try:
+            new_bal = float(args[0])
+            current_account_balance = new_bal
+            await update.message.reply_text(f"✅ **Balance Updated:** Strict risk configured for **${current_account_balance:.2f}**.", parse_mode="Markdown")
+            return
+        except ValueError:
+            pass
+            
+    await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance:.2f}\n*To update:* `/balance 10`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
@@ -444,14 +440,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     total_samples = len(trade_history)
-    live_bal = get_live_mt5_account_balance()
 
     stats_text = (
         f"📊 **Divine Simon HF Performance Matrix:**\n"
         f"• Total Samples Logged: `{total_samples}`\n"
         f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
-        f"• Live MT5 Balance Guard: `${live_bal:.2f}`\n"
+        f"• Active Balance Guard: `${current_account_balance:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
     )
 
@@ -480,8 +475,7 @@ async def hourly_heartbeat_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                live_bal = get_live_mt5_account_balance()
-                heartbeat_msg = f"🟢 **[HEARTBEAT - DIVINE SIMON HF]** Engine Active | MT5 Balance: `${live_bal:.2f}` | Win Rate: `{win_rate:.1f}%`"
+                heartbeat_msg = f"🟢 **[HEARTBEAT - DIVINE SIMON HF]** Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop fatal exception caught & recovered: {e}")
@@ -615,7 +609,6 @@ async def signal_loop(app):
                         last_signals[ticker] = sig
                         dir_icon = "🟢" if sig == "BUY" else "🔴"
                         num_tranches = 3  
-                        live_bal = get_live_mt5_account_balance()
 
                         signal_text = (
                             f"💎 **DIVINE SIMON HF SIGNAL**\n"
@@ -625,7 +618,7 @@ async def signal_loop(app):
                             f"🔹 **Base Entry:** `{entry:.2f}`\n"
                             f"🔴 **Stop Loss:** `{sl:.2f}`\n"
                             f"🎯 **Take Profit:** `{tp:.2f}`\n"
-                            f"⚖️ **Lot Per Tranche (HF):** `{rec_lot}` *(MT5 Balance: ${live_bal:.2f})*\n"
+                            f"⚖️ **Lot Per Tranche (HF):** `{rec_lot}` *(Balance Guard: ${current_account_balance:.2f})*\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🛡️ *High-Frequency Edge Verified.*"
                         )
