@@ -99,8 +99,8 @@ def is_active_trading_session(ticker):
 
     return True
 
-# --- AUTOMATIC NEWS CIRCUIT BREAKER ---
-def is_high_impact_news_time():
+# --- AUTOMATIC NEWS & WEEKEND CIRCUIT BREAKER ---
+def is_high_impact_news_time(ticker="GC=F"):
     try:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         response = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=5)
@@ -115,10 +115,12 @@ def is_high_impact_news_time():
                         if -15 <= time_diff <= 30:
                             return True, f"High-Impact News Event: {ev.get('title')} ({ev.get('country')})"
         
-        if now_utc.weekday() == 4 and now_utc.hour >= 20:
-            return True, "Weekend Market Close Volatility Window"
-        if now_utc.weekday() == 6 and now_utc.hour < 1:
-            return True, "Weekend Market Open Volatility Window"
+        # Weekend volatility windows apply to traditional assets like Gold, but NOT 24/7 crypto
+        if ticker != "BTC-USD":
+            if now_utc.weekday() == 4 and now_utc.hour >= 20:
+                return True, "Weekend Market Close Volatility Window"
+            if now_utc.weekday() == 6 and now_utc.hour < 1:
+                return True, "Weekend Market Open Volatility Window"
 
     except Exception as e:
         logging.error(f"News check API error: {e}")
@@ -243,7 +245,6 @@ def get_gold_strategy_signal(ticker):
     ema50 = float(c['ema50'])
 
     sig = None
-    # Z-Score threshold 1.5 with H1 trend agreement & RSI guard
     if h1_bias == "BULLISH" and z_score <= -1.5 and close_p >= ema50 and (30 <= rsi <= 60):
         sig = "BUY"
     elif h1_bias == "BEARISH" and z_score >= 1.5 and close_p <= ema50 and (40 <= rsi <= 70):
@@ -284,7 +285,6 @@ def get_bitcoin_strategy_signal(ticker):
     z_score = float(c['z_score'])
 
     sig = None
-    # Z-Score threshold 1.6 with strict RSI exhaustion filters
     if z_score <= -1.6 and rsi < 40:
         sig = "BUY"
     elif z_score >= 1.6 and rsi > 60:
@@ -323,7 +323,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Ultra-Strict Quantitative Sniper Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **Single-Trade Z-Score Matrix Active.**", 
+            f"🔓 **Jim Simons Quantitative Sniper Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **24/7 Z-Score Matrix Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -350,8 +350,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 Optimal (Ultra-Strict Sniper Active)"
+    news_active, news_reason = is_high_impact_news_time("GC=F")
+    status_msg = "🟢 Optimal (24/7 Sniper Active)"
     if news_active:
         status_msg = f"⚠️ Paused (News Shield): {news_reason}"
     elif daily_losses_count >= 3:
@@ -361,7 +361,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_samples = len(trade_history)
 
     stats_text = (
-        f"📊 **Sniper Performance Matrix:**\n"
+        f"📊 **Simons Matrix Performance:**\n"
         f"• Total Samples Logged: `{total_samples}`\n"
         f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
@@ -431,7 +431,7 @@ async def live_chart_guidance_loop(app):
                 sl = trade["sl"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = f"🎯 [TAKE PROFIT SECURED!] - {label}\nPrice hit target at `{tp:.2f}`. Edge Realized! 🚀"
+                    msg = f"🎯 [TAKE PROFIT SECURED!] - {label}\nPrice hit target at `{tp:.2f}`. Statistical Edge Realized! 🚀"
                     await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("WIN")
                     active_trades.pop(label, None)
@@ -475,22 +475,6 @@ async def signal_loop(app):
                 await asyncio.sleep(60)
                 continue
 
-            is_news, news_desc = is_high_impact_news_time()
-            if is_news:
-                if not news_alert_sent:
-                    target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-                    if target_user and authorized_users:
-                        await app.bot.send_message(
-                            chat_id=target_user, 
-                            text=f"🛡 [NEWS SHIELD ENGAGED]\nPaused due to: *{news_desc}*.", 
-                            parse_mode="Markdown"
-                        )
-                    news_alert_sent = True
-                await asyncio.sleep(60)
-                continue
-            else:
-                news_alert_sent = False
-
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
@@ -498,6 +482,19 @@ async def signal_loop(app):
                     continue  # Strict single active trade lock per asset
 
                 if not is_active_trading_session(ticker):
+                    continue
+
+                # Asset-specific news shield check (Bitcoin skips weekend close filter)
+                is_news, news_desc = is_high_impact_news_time(ticker)
+                if is_news:
+                    if not news_alert_sent:
+                        target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+                        if target_user and authorized_users:
+                            await app.bot.send_message(
+                                chat_id=target_user, 
+                                text=f"🛡 [NEWS SHIELD ENGAGED - {label}]\nPaused due to: *{news_desc}*.", 
+                                parse_mode="Markdown"
+                            )
                     continue
 
                 sig, entry, sl, tp, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
@@ -510,7 +507,7 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **ULTRA-STRICT SNIPER SIGNAL**\n"
+                        f"💎 **JIM SIMONS 24/7 SNIPER SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** {label}\n"
                         f"⚙️ **Model:** `{strategy_name}`\n"
@@ -564,7 +561,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Ultra-Strict Quantitative Sniper Engine Running...")
+    logging.info("Jim Simons Quantitative Sniper Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
