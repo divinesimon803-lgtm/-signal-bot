@@ -272,7 +272,6 @@ def get_gold_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Enhanced with Z-Score statistical boundary gating
     if h1_bias == "BULLISH" and close_p >= ema50 and (35 <= rsi <= 58) and z_score <= -1.2 and is_bullish_candle:
         sig = "BUY"
     elif h1_bias == "BEARISH" and close_p <= ema50 and (42 <= rsi <= 65) and z_score >= 1.2 and is_bearish_candle:
@@ -432,7 +431,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- HOURLY HEARTBEAT LOOP ---
+# --- HOURLY HEARTBEAT LOOP (CRASH-PROOF) ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
@@ -443,10 +442,10 @@ async def hourly_heartbeat_loop(app):
                 heartbeat_msg = f"🟢 **[HEARTBEAT]** Z-Score Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
-            logging.error(f"Heartbeat loop error: {e}")
+            logging.error(f"Heartbeat loop fatal exception caught & recovered: {e}")
             await asyncio.sleep(60)
 
-# --- REAL-TIME GUIDANCE LOOP WITH AUTO-EXPIRY WATCHDOG ---
+# --- REAL-TIME GUIDANCE LOOP WITH AUTO-EXPIRY WATCHDOG (CRASH-PROOF) ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
@@ -459,49 +458,52 @@ async def live_chart_guidance_loop(app):
             current_time = datetime.datetime.now(datetime.timezone.utc)
 
             for label, trade in list(active_trades.items()):
-                trade_age = (current_time - trade.get("timestamp", current_time)).total_seconds()
-                if trade_age > 14400: # 4 hours
-                    active_trades.pop(label, None)
-                    if target_user and authorized_users:
-                        await app.bot.send_message(chat_id=target_user, text=f"🔄 **[AUTO-RESET]** Stale basket cleared for {label}.", parse_mode="Markdown")
-                    continue
+                try:
+                    trade_age = (current_time - trade.get("timestamp", current_time)).total_seconds()
+                    if trade_age > 14400: # 4 hours
+                        active_trades.pop(label, None)
+                        if target_user and authorized_users:
+                            await app.bot.send_message(chat_id=target_user, text=f"🔄 **[AUTO-RESET]** Stale basket cleared for {label}.", parse_mode="Markdown")
+                        continue
 
-                y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
-                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
-                if df_live is None or len(df_live) < 10:
-                    continue
+                    y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
+                    df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
+                    if df_live is None or len(df_live) < 10:
+                        continue
 
-                current_price = float(df_live['Close'].iloc[-1])
-                trade_type = trade["type"]
-                tp = trade["tp"]
-                sl = trade["sl"]
-                be_level = trade["be_level"]
-                entry = trade["entry"]
+                    current_price = float(df_live['Close'].iloc[-1])
+                    trade_type = trade["type"]
+                    tp = trade["tp"]
+                    sl = trade["sl"]
+                    be_level = trade["be_level"]
+                    entry = trade["entry"]
 
-                if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = f"🎯 **[BASKET TARGET SECURED!]** - {label}\nAll tranches hit Take Profit at `{tp:.2f}`. Statistical Edge Realized! 🚀"
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                    record_trade_outcome("WIN")
-                    active_trades.pop(label, None)
-                    continue
+                    if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
+                        msg = f"🎯 **[BASKET TARGET SECURED!]** - {label}\nAll tranches hit Take Profit at `{tp:.2f}`. Statistical Edge Realized! 🚀"
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                        record_trade_outcome("WIN")
+                        active_trades.pop(label, None)
+                        continue
 
-                if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    msg = f"🛑 **[BASKET STOP LOSS HIT]** - {label}\nRisk boundary defended at `{sl:.2f}`. Micro-account protected."
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
-                    record_trade_outcome("LOSS")
-                    active_trades.pop(label, None)
-                    continue
+                    if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
+                        msg = f"🛑 **[BASKET STOP LOSS HIT]** - {label}\nRisk boundary defended at `{sl:.2f}`. Micro-account protected."
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                        record_trade_outcome("LOSS")
+                        active_trades.pop(label, None)
+                        continue
 
-                if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
-                    trade["be_hit"] = True
-                    msg = f"🛡 **[PROTECT BASKET]** - {label}\nTrail Stop Loss to base entry (`{entry:.2f}`) to secure risk-free execution."
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
+                        trade["be_hit"] = True
+                        msg = f"🛡 **[PROTECT BASKET]** - {label}\nTrail Stop Loss to base entry (`{entry:.2f}`) to secure risk-free execution."
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                except Exception as inner_e:
+                    logging.error(f"Error processing individual trade {label} in guidance loop: {inner_e}")
 
         except Exception as e:
-            logging.error(f"Guidance loop error: {e}")
-            await asyncio.sleep(10)
+            logging.error(f"Guidance loop fatal exception caught & recovered: {e}")
+            await asyncio.sleep(15)
 
-# --- SIGNAL SCANNER LOOP WITH MULTI-TRANCHE EXECUTION MODEL ---
+# --- SIGNAL SCANNER LOOP WITH MULTI-TRANCHE EXECUTION MODEL (CRASH-PROOF) ---
 async def signal_loop(app):
     global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent
     news_alert_sent = False
@@ -547,51 +549,55 @@ async def signal_loop(app):
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
-                if label in active_trades:
-                    continue
+                try:
+                    if label in active_trades:
+                        continue
 
-                if not is_active_trading_session(ticker):
-                    continue
+                    if not is_active_trading_session(ticker):
+                        continue
 
-                sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
+                    sig, entry, sl, tp, partial_target, be_level, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
 
-                if sig is None:
-                    continue
+                    if sig is None:
+                        continue
 
-                if last_signals.get(ticker) != sig:
-                    last_signals[ticker] = sig
-                    dir_icon = "🟢" if sig == "BUY" else "🔴"
-                    num_tranches = 3  # Multi-tranche quantitative scaling
+                    if last_signals.get(ticker) != sig:
+                        last_signals[ticker] = sig
+                        dir_icon = "🟢" if sig == "BUY" else "🔴"
+                        num_tranches = 3  
 
-                    signal_text = (
-                        f"💎 **QUANTITATIVE Z-SCORE SIGNAL**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"📌 **Asset:** `{label}` | **Model:** `{strategy_name}`\n"
-                        f"📈 **Direction:** {dir_icon} **{sig}** ({num_tranches} Legs)\n\n"
-                        f"🔹 **Base Entry:** `{entry:.2f}`\n"
-                        f"🔴 **Stop Loss:** `{sl:.2f}`\n"
-                        f"🎯 **Take Profit:** `{tp:.2f}`\n"
-                        f"⚖️ **Lot Per Tranche:** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🛡️ *Z-Score & Statistical Edge Verified.*"
-                    )
+                        signal_text = (
+                            f"💎 **QUANTITATIVE Z-SCORE SIGNAL**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 **Asset:** `{label}` | **Model:** `{strategy_name}`\n"
+                            f"📈 **Direction:** {dir_icon} **{sig}** ({num_tranches} Legs)\n\n"
+                            f"🔹 **Base Entry:** `{entry:.2f}`\n"
+                            f"🔴 **Stop Loss:** `{sl:.2f}`\n"
+                            f"🎯 **Take Profit:** `{tp:.2f}`\n"
+                            f"⚖️ **Lot Per Tranche:** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"🛡️ *Z-Score & Statistical Edge Verified.*"
+                        )
 
-                    target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-                    await app.bot.send_message(chat_id=target_user, text=signal_text, parse_mode="Markdown")
+                        target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+                        await app.bot.send_message(chat_id=target_user, text=signal_text, parse_mode="Markdown")
 
-                    active_trades[label] = {
-                        "type": sig,
-                        "entry": entry,
-                        "sl": sl,
-                        "tp": tp,
-                        "be_level": be_level,
-                        "be_hit": False,
-                        "tranches": num_tranches,
-                        "timestamp": datetime.datetime.now(datetime.timezone.utc)
-                    }
+                        active_trades[label] = {
+                            "type": sig,
+                            "entry": entry,
+                            "sl": sl,
+                            "tp": tp,
+                            "be_level": be_level,
+                            "be_hit": False,
+                            "tranches": num_tranches,
+                            "timestamp": datetime.datetime.now(datetime.timezone.utc)
+                        }
+                except Exception as asset_e:
+                    logging.error(f"Error scanning asset {label}: {asset_e}")
+
         except Exception as e:
-            logging.error(f"Signal loop error: {e}")
-            await asyncio.sleep(15)
+            logging.error(f"Signal loop fatal exception caught & recovered: {e}")
+            await asyncio.sleep(20)
 
         await asyncio.sleep(20)
 
