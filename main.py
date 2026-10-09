@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import json
 import logging
 import os
 import pandas as pd
@@ -27,7 +28,7 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
 RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 
 # --- ACCOUNT BALANCE MANAGEMENT ---
-current_account_balance = 0.50  # Optimized default baseline for December micro-testing; update anytime via /balance command
+current_account_balance = 0.50  # Optimized default baseline for micro-testing; update anytime via /balance command
 
 # --- DAILY LOSS LIMIT & SIMONS STATISTICAL MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
@@ -49,7 +50,40 @@ TIMEFRAME_H1 = "1h"
 
 last_signals = {}
 authorized_users = set()
-active_trades = {}  # Tracks ongoing trades for live institutional management
+
+# --- STATE PERSISTENCE FILE FOR CRASH RECOVERY ---
+STATE_FILE = "active_trades_state.json"
+
+def save_active_trades_state():
+    """Persists active trades to disk so reboots on Render don't wipe memory."""
+    try:
+        data = {}
+        for label, trade in active_trades.items():
+            trade_copy = trade.copy()
+            if isinstance(trade_copy.get("timestamp"), datetime.datetime):
+                trade_copy["timestamp"] = trade_copy["timestamp"].isoformat()
+            data[label] = trade_copy
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logging.error(f"Error saving state persistence file: {e}")
+
+def load_active_trades_state():
+    """Recovers active trades from disk after a system restart."""
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+            for label, trade in data.items():
+                if isinstance(trade.get("timestamp"), str):
+                    trade["timestamp"] = datetime.datetime.fromisoformat(trade["timestamp"])
+            return data
+    except Exception as e:
+        logging.error(f"Error loading state persistence file: {e}")
+        return {}
+
+active_trades = load_active_trades_state()
 
 # --- QUANTITATIVE PERFORMANCE TRACKER (SIMONS FRAMEWORK) ---
 trade_history = []  
@@ -101,7 +135,7 @@ def is_active_trading_session(ticker):
 
     return True
 
-# --- UPGRADE 1: ALTERNATIVE DATA & NEWS SENTIMENT CIRCUIT BREAKER ---
+# --- ALTERNATIVE DATA & NEWS SENTIMENT CIRCUIT BREAKER ---
 def is_high_impact_news_time():
     try:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -134,7 +168,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Smart Pro Gold/Bitcoin Quantitative Engine is Live."
+    return "Divine Simon's High-Frequency Quantitative Engine is Live."
 
 def self_ping_loop():
     """Pings its own Render URL every 5 minutes to prevent host sleep/inactivity stalls."""
@@ -154,8 +188,8 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- STRICT DYNAMIC LOT SIZING (MICRO-ACCOUNT SAFEGUARD) ---
-def calculate_dynamic_lot(ticker, sl_pips):
+# --- INSTITUTIONAL INVERSE VOLATILITY POSITION SIZING (ATR-WEIGHTED) ---
+def calculate_dynamic_lot(ticker, sl_pips, current_atr):
     global current_account_balance
     risk_amount = current_account_balance * RISK_PER_TRADE_PCT
     pip_value = 1.0
@@ -163,7 +197,8 @@ def calculate_dynamic_lot(ticker, sl_pips):
     if sl_pips <= 0:
         return 0.01
 
-    calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
+    volatility_scalar = 1.0 / max(current_atr, 1.0)
+    calculated_lot = round((risk_amount / (sl_pips * pip_value)) * (1.0 + volatility_scalar * 0.1), 2)
     
     if current_account_balance <= 1.0:
         return 0.01  # Absolute micro-balance floor
@@ -206,7 +241,7 @@ def fetch_data(ticker, interval, period="5d"):
         df['bb_lower'] = bb.bollinger_lband()
         df['bb_middle'] = bb.bollinger_mavg()
 
-        # --- Z-SCORE CALCULATION (STATISTICAL MEAN REVERSION METRIC) ---
+        # --- Z-SCORE CALCULATION ---
         rolling_mean = close_series.rolling(window=20).mean()
         rolling_std = close_series.rolling(window=20).std()
         df['z_score'] = (close_series - rolling_mean) / rolling_std
@@ -216,7 +251,7 @@ def fetch_data(ticker, interval, period="5d"):
         logging.error(f"Data fetch error for {ticker}: {e}")
         return None
 
-# --- UPGRADE 2: MULTI-TIMEFRAME MATRIX CORRELATION ---
+# --- MULTI-TIMEFRAME MATRIX CORRELATION ---
 def get_h1_trend_bias(ticker):
     df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="7d")
     if df_h1 is None or len(df_h1) < 50:
@@ -232,19 +267,18 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- UPGRADE 3: DYNAMIC VOLATILITY REGIME (ATR REGIME CHECK) ---
+# --- DYNAMIC VOLATILITY REGIME (ATR REGIME CHECK) ---
 def is_market_in_random_chop(df_m15):
-    """Evaluates if current market volatility state is in an unstable random chop regime."""
     if df_m15 is None or len(df_m15) < 20:
         return False
     recent_atr = df_m15['atr14'].iloc[-1]
     avg_atr = df_m15['atr14'].rolling(window=20).mean().iloc[-1]
     if pd.notna(recent_atr) and pd.notna(avg_atr):
-        if recent_atr < (avg_atr * 0.4): # Extremely low volatility chop
+        if recent_atr < (avg_atr * 0.3): # Slightly relaxed chop filter for higher frequency
             return True
     return False
 
-# --- OPTIMISED GOLD (XAUUSD) STRATEGY (BALANCED STRICTNESS) ---
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY (HIGH FREQUENCY Z-SCORE 0.8) ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -272,17 +306,18 @@ def get_gold_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Balanced thresholds: Z-Score 1.0 & comfortable RSI window for steady quality signals
-    if h1_bias == "BULLISH" and close_p >= ema50 and (30 <= rsi <= 62) and z_score <= -1.0 and is_bullish_candle:
+    # Accelerated thresholds: Z-Score lowered to 0.8 for faster signal generation
+    if h1_bias == "BULLISH" and close_p >= ema50 and (28 <= rsi <= 68) and z_score <= -0.8 and is_bullish_candle:
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p <= ema50 and (38 <= rsi <= 70) and z_score >= 1.0 and is_bearish_candle:
+    elif h1_bias == "BEARISH" and close_p <= ema50 and (32 <= rsi <= 72) and z_score >= 0.8 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 0.5  
+    slippage_buffer = 0.05 * atr
+    spread_buffer = 0.5 + slippage_buffer  
     min_broker_stop_distance = max(atr * 1.5, 12.0)  
 
     if sig == "BUY":
@@ -296,10 +331,10 @@ def get_gold_strategy_signal(ticker):
         tp = round(entry - (min_broker_stop_distance * 1.6), 2)
         be_level = round(entry - (min_broker_stop_distance * 0.8), 2)
 
-    rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD-ZSCORE ({h1_bias})"
+    rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance, atr)
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"DIVINE-SIMONS-GOLD-HF ({h1_bias})"
 
-# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY (BALANCED STRICTNESS) ---
+# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY (HIGH FREQUENCY Z-SCORE 0.85) ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -325,17 +360,18 @@ def get_bitcoin_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Balanced thresholds: Z-Score 1.1 & workable RSI limits for consistent capture
-    if close_p <= bb_lower and rsi < 45 and z_score <= -1.1 and is_bullish_candle:
+    # Accelerated thresholds: Z-Score lowered to 0.85 for faster Bitcoin triggers
+    if z_score <= -0.85 and rsi < 50 and is_bullish_candle:
         sig = "BUY"
-    elif close_p >= bb_upper and rsi > 55 and z_score >= 1.1 and is_bearish_candle:
+    elif z_score >= 0.85 and rsi > 50 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 10.0
+    slippage_buffer = 0.05 * atr
+    spread_buffer = 10.0 + slippage_buffer
     
     sl_distance = max(atr * 1.6, 40.0) 
     tp_distance = abs(live_price - bb_middle) * 0.85  
@@ -353,8 +389,8 @@ def get_bitcoin_strategy_signal(ticker):
         tp = round(entry - tp_distance, 2)
         be_level = round(entry - (sl_distance * 0.8), 2)
 
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "SIMONS-BTC-ZSCORE-BOUNCE"
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance, atr)
+    return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, "DIVINE-SIMONS-BTC-HF"
 
 def get_strategy_signal(ticker):
     if ticker == "GC=F":
@@ -370,7 +406,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Simons Quantitative Z-Score Bot Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **Z-Score Statistical Mean Reversion Active.**", 
+            f"🔓 **Divine Simon's HF Engine Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **High-Frequency Z-Score & State Persistence Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -398,7 +434,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time()
-    status_msg = "🟢 **Optimal (Z-Score Engine Active)**"
+    status_msg = "🟢 **Optimal (HF Quantitative Engine Active)**"
     if news_active:
         status_msg = f"⚠️ **Paused (News Sentiment Shield):** {news_reason}"
     elif daily_losses_count >= 3:
@@ -408,7 +444,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_samples = len(trade_history)
 
     stats_text = (
-        f"📊 **Quantitative Performance Matrix (Z-Score Model):**\n"
+        f"📊 **Divine Simon HF Performance Matrix:**\n"
         f"• Total Samples Logged: `{total_samples}`\n"
         f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
@@ -433,7 +469,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- HOURLY HEARTBEAT LOOP (CRASH-PROOF) ---
+# --- HOURLY HEARTBEAT LOOP ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
@@ -441,13 +477,13 @@ async def hourly_heartbeat_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                heartbeat_msg = f"🟢 **[HEARTBEAT]** Z-Score Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
+                heartbeat_msg = f"🟢 **[HEARTBEAT - DIVINE SIMON HF]** Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop fatal exception caught & recovered: {e}")
             await asyncio.sleep(60)
 
-# --- REAL-TIME GUIDANCE LOOP WITH AUTO-EXPIRY WATCHDOG (CRASH-PROOF) ---
+# --- REAL-TIME GUIDANCE LOOP WITH STATE PERSISTENCE ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
@@ -459,11 +495,13 @@ async def live_chart_guidance_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             current_time = datetime.datetime.now(datetime.timezone.utc)
 
+            state_changed = False
             for label, trade in list(active_trades.items()):
                 try:
                     trade_age = (current_time - trade.get("timestamp", current_time)).total_seconds()
                     if trade_age > 14400: # 4 hours
                         active_trades.pop(label, None)
+                        state_changed = True
                         if target_user and authorized_users:
                             await app.bot.send_message(chat_id=target_user, text=f"🔄 **[AUTO-RESET]** Stale basket cleared for {label}.", parse_mode="Markdown")
                         continue
@@ -485,6 +523,7 @@ async def live_chart_guidance_loop(app):
                         await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                         record_trade_outcome("WIN")
                         active_trades.pop(label, None)
+                        state_changed = True
                         continue
 
                     if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
@@ -492,20 +531,25 @@ async def live_chart_guidance_loop(app):
                         await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                         record_trade_outcome("LOSS")
                         active_trades.pop(label, None)
+                        state_changed = True
                         continue
 
                     if not trade["be_hit"] and ((trade_type == "BUY" and current_price >= be_level) or (trade_type == "SELL" and current_price <= be_level)):
                         trade["be_hit"] = True
+                        state_changed = True
                         msg = f"🛡 **[PROTECT BASKET]** - {label}\nTrail Stop Loss to base entry (`{entry:.2f}`) to secure risk-free execution."
                         await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                 except Exception as inner_e:
                     logging.error(f"Error processing individual trade {label} in guidance loop: {inner_e}")
 
+            if state_changed:
+                save_active_trades_state()
+
         except Exception as e:
             logging.error(f"Guidance loop fatal exception caught & recovered: {e}")
             await asyncio.sleep(15)
 
-# --- SIGNAL SCANNER LOOP WITH MULTI-TRANCHE EXECUTION MODEL (CRASH-PROOF) ---
+# --- HIGH-FREQUENCY SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
     global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent
     news_alert_sent = False
@@ -569,16 +613,16 @@ async def signal_loop(app):
                         num_tranches = 3  
 
                         signal_text = (
-                            f"💎 **QUANTITATIVE Z-SCORE SIGNAL**\n"
+                            f"💎 **DIVINE SIMON HF SIGNAL**\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"📌 **Asset:** `{label}` | **Model:** `{strategy_name}`\n"
                             f"📈 **Direction:** {dir_icon} **{sig}** ({num_tranches} Legs)\n\n"
                             f"🔹 **Base Entry:** `{entry:.2f}`\n"
                             f"🔴 **Stop Loss:** `{sl:.2f}`\n"
                             f"🎯 **Take Profit:** `{tp:.2f}`\n"
-                            f"⚖️ **Lot Per Tranche:** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
+                            f"⚖️ **Lot Per Tranche (HF):** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
-                            f"🛡️ *Z-Score & Statistical Edge Verified.*"
+                            f"🛡️ *High-Frequency Edge Verified.*"
                         )
 
                         target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -594,14 +638,17 @@ async def signal_loop(app):
                             "tranches": num_tranches,
                             "timestamp": datetime.datetime.now(datetime.timezone.utc)
                         }
+                        save_active_trades_state()
+
                 except Exception as asset_e:
                     logging.error(f"Error scanning asset {label}: {asset_e}")
 
         except Exception as e:
             logging.error(f"Signal loop fatal exception caught & recovered: {e}")
-            await asyncio.sleep(20)
+            await asyncio.sleep(10)
 
-        await asyncio.sleep(20)
+        # Accelerated polling frequency (8 seconds) to catch fast market turns
+        await asyncio.sleep(8)
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
@@ -628,7 +675,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Simons Quantitative Z-Score Engine Running...")
+    logging.info("Divine Simon's High-Frequency Quantitative Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
