@@ -244,7 +244,7 @@ def is_market_in_random_chop(df_m15):
             return True
     return False
 
-# --- OPTIMISED GOLD (XAUUSD) STRATEGY WITH Z-SCORE & REGIME CHECKS ---
+# --- OPTIMISED GOLD (XAUUSD) STRATEGY (BALANCED STRICTNESS) ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -272,9 +272,10 @@ def get_gold_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    if h1_bias == "BULLISH" and close_p >= ema50 and (35 <= rsi <= 58) and z_score <= -1.2 and is_bullish_candle:
+    # Balanced thresholds: Z-Score 1.0 & comfortable RSI window for steady quality signals
+    if h1_bias == "BULLISH" and close_p >= ema50 and (30 <= rsi <= 62) and z_score <= -1.0 and is_bullish_candle:
         sig = "BUY"
-    elif h1_bias == "BEARISH" and close_p <= ema50 and (42 <= rsi <= 65) and z_score >= 1.2 and is_bearish_candle:
+    elif h1_bias == "BEARISH" and close_p <= ema50 and (38 <= rsi <= 70) and z_score >= 1.0 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
@@ -298,7 +299,7 @@ def get_gold_strategy_signal(ticker):
     rec_lot = calculate_dynamic_lot(ticker, min_broker_stop_distance)
     return sig, entry, sl, tp, entry, be_level, rec_lot, rsi, f"SIMONS-GOLD-ZSCORE ({h1_bias})"
 
-# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY WITH Z-SCORE & REGIME CHECKS ---
+# --- OPTIMISED BITCOIN (BTCUSD) STRATEGY (BALANCED STRICTNESS) ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -324,9 +325,10 @@ def get_bitcoin_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    if close_p <= bb_lower and rsi < 40 and z_score <= -1.5 and is_bullish_candle:
+    # Balanced thresholds: Z-Score 1.1 & workable RSI limits for consistent capture
+    if close_p <= bb_lower and rsi < 45 and z_score <= -1.1 and is_bullish_candle:
         sig = "BUY"
-    elif close_p >= bb_upper and rsi > 60 and z_score >= 1.5 and is_bearish_candle:
+    elif close_p >= bb_upper and rsi > 55 and z_score >= 1.1 and is_bearish_candle:
         sig = "SELL"
 
     if not sig:
