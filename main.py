@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import ta
 import yfinance as yf
+import MetaTrader5 as mt5
 from flask import Flask
 from threading import Thread
 from telegram import Update
@@ -25,10 +26,22 @@ BOT_PASSCODE = os.getenv("BOT_PASSCODE")
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
-RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
+RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile per basket
 
-# --- ACCOUNT BALANCE MANAGEMENT ---
-current_account_balance = 0.50  # Optimized default baseline for micro-testing; update anytime via /balance command
+# --- METATRADER 5 ACCOUNT AUTO-SYNC ---
+def get_live_mt5_account_balance():
+    """Fetches real-time account balance directly from MT5 to prevent manual input errors."""
+    try:
+        if not mt5.initialize():
+            logging.error(f"MT5 Initialization failed: {mt5.last_error()}")
+            return 10.0  # Safe fallback default
+        
+        acc_info = mt5.account_info()
+        if acc_info is not None:
+            return float(acc_info.balance)
+    except Exception as e:
+        logging.error(f"Error fetching live MT5 balance: {e}")
+    return 10.0
 
 # --- DAILY LOSS LIMIT & SIMONS STATISTICAL MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
@@ -188,24 +201,24 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- INSTITUTIONAL INVERSE VOLATILITY POSITION SIZING (ATR-WEIGHTED) ---
+# --- STRICT INSTITUTIONAL RISK POSITION SIZING ---
 def calculate_dynamic_lot(ticker, sl_pips, current_atr):
-    global current_account_balance
-    risk_amount = current_account_balance * RISK_PER_TRADE_PCT
+    live_balance = get_live_mt5_account_balance()
+    risk_amount = live_balance * RISK_PER_TRADE_PCT
     pip_value = 1.0
 
     if sl_pips <= 0:
         return 0.01
 
+    # Split risk evenly across 3 tranches (legs) to protect the account
+    tranche_risk_amount = risk_amount / 3.0
     volatility_scalar = 1.0 / max(current_atr, 1.0)
-    calculated_lot = round((risk_amount / (sl_pips * pip_value)) * (1.0 + volatility_scalar * 0.1), 2)
+    calculated_lot = round((tranche_risk_amount / (sl_pips * pip_value)) * (1.0 + volatility_scalar * 0.1), 2)
     
-    if current_account_balance <= 1.0:
-        return 0.01  # Absolute micro-balance floor
-    elif current_account_balance < 10.0:
-        return 0.01
-    elif current_account_balance < 100.0:
-        return 0.02
+    if live_balance <= 10.0:
+        return 0.01  # Absolute micro-balance capital guard
+    elif live_balance < 100.0:
+        return max(0.01, min(calculated_lot, 0.05))
     else:
         return max(0.01, min(calculated_lot, 2.0))
 
@@ -274,7 +287,7 @@ def is_market_in_random_chop(df_m15):
     recent_atr = df_m15['atr14'].iloc[-1]
     avg_atr = df_m15['atr14'].rolling(window=20).mean().iloc[-1]
     if pd.notna(recent_atr) and pd.notna(avg_atr):
-        if recent_atr < (avg_atr * 0.3): # Slightly relaxed chop filter for higher frequency
+        if recent_atr < (avg_atr * 0.3):
             return True
     return False
 
@@ -306,7 +319,6 @@ def get_gold_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Accelerated thresholds: Z-Score lowered to 0.8 for faster signal generation
     if h1_bias == "BULLISH" and close_p >= ema50 and (28 <= rsi <= 68) and z_score <= -0.8 and is_bullish_candle:
         sig = "BUY"
     elif h1_bias == "BEARISH" and close_p <= ema50 and (32 <= rsi <= 72) and z_score >= 0.8 and is_bearish_candle:
@@ -360,7 +372,6 @@ def get_bitcoin_strategy_signal(ticker):
     is_bearish_candle = close_p < open_p
 
     sig = None
-    # Accelerated thresholds: Z-Score lowered to 0.85 for faster Bitcoin triggers
     if z_score <= -0.85 and rsi < 50 and is_bullish_candle:
         sig = "BUY"
     elif z_score >= 0.85 and rsi > 50 and is_bearish_candle:
@@ -373,7 +384,7 @@ def get_bitcoin_strategy_signal(ticker):
     slippage_buffer = 0.05 * atr
     spread_buffer = 10.0 + slippage_buffer
     
-    sl_distance = max(atr * 1.6, 40.0) 
+    sl_distance = max(atr * 1.6, 40.0)  
     tp_distance = abs(live_price - bb_middle) * 0.85  
     if tp_distance < (sl_distance * 1.1):
         tp_distance = sl_distance * 1.5
@@ -405,29 +416,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
+        live_bal = get_live_mt5_account_balance()
         await update.message.reply_text(
-            f"🔓 **Divine Simon's HF Engine Online.**\n💰 Balance Mode: **${current_account_balance:.2f}**\n📊 **High-Frequency Z-Score & State Persistence Active.**", 
+            f"🔓 **Divine Simon's HF Engine Online.**\n💰 Live MT5 Balance Auto-Sync: **${live_bal:.2f}**\n📊 **High-Frequency Z-Score & Strict Risk Guard Active.**", 
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global current_account_balance
     if update.effective_user.id not in authorized_users:
         return
     
-    args = context.args
-    if args:
-        try:
-            new_bal = float(args[0])
-            current_account_balance = new_bal
-            await update.message.reply_text(f"✅ **Balance Updated:** Strict risk configured for **${current_account_balance:.2f}**.", parse_mode="Markdown")
-            return
-        except ValueError:
-            pass
-            
-    await update.message.reply_text(f"💰 **Current Account Balance:** ${current_account_balance:.2f}\n*To update:* `/balance 0.50`", parse_mode="Markdown")
+    live_bal = get_live_mt5_account_balance()
+    await update.message.reply_text(f"💰 **Live MT5 Account Balance:** ${live_bal:.2f}\n*Risk managed automatically per basket.*", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
@@ -442,13 +444,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     total_samples = len(trade_history)
+    live_bal = get_live_mt5_account_balance()
 
     stats_text = (
         f"📊 **Divine Simon HF Performance Matrix:**\n"
         f"• Total Samples Logged: `{total_samples}`\n"
         f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
-        f"• Active Balance Guard: `${current_account_balance:.2f}`\n"
+        f"• Live MT5 Balance Guard: `${live_bal:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
     )
 
@@ -477,7 +480,8 @@ async def hourly_heartbeat_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                heartbeat_msg = f"🟢 **[HEARTBEAT - DIVINE SIMON HF]** Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
+                live_bal = get_live_mt5_account_balance()
+                heartbeat_msg = f"🟢 **[HEARTBEAT - DIVINE SIMON HF]** Engine Active | MT5 Balance: `${live_bal:.2f}` | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop fatal exception caught & recovered: {e}")
@@ -611,6 +615,7 @@ async def signal_loop(app):
                         last_signals[ticker] = sig
                         dir_icon = "🟢" if sig == "BUY" else "🔴"
                         num_tranches = 3  
+                        live_bal = get_live_mt5_account_balance()
 
                         signal_text = (
                             f"💎 **DIVINE SIMON HF SIGNAL**\n"
@@ -620,7 +625,7 @@ async def signal_loop(app):
                             f"🔹 **Base Entry:** `{entry:.2f}`\n"
                             f"🔴 **Stop Loss:** `{sl:.2f}`\n"
                             f"🎯 **Take Profit:** `{tp:.2f}`\n"
-                            f"⚖️ **Lot Per Tranche (HF):** `{rec_lot}` *(Balance: ${current_account_balance:.2f})*\n"
+                            f"⚖️ **Lot Per Tranche (HF):** `{rec_lot}` *(MT5 Balance: ${live_bal:.2f})*\n"
                             f"━━━━━━━━━━━━━━━━━━━\n"
                             f"🛡️ *High-Frequency Edge Verified.*"
                         )
