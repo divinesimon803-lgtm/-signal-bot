@@ -29,6 +29,9 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 # --- ACCOUNT BALANCE MANAGEMENT ---
 current_account_balance = 10.00  # Default micro-account balance guard baseline
 
+# --- BOT TOGGLE CONTROL ---
+bot_active = True  # Controls signal generation
+
 # --- DAILY LOSS LIMIT & DIVINE QUANT MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
@@ -133,7 +136,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Divine & Jim Jnr Quantitative Sniper Engine is Live."
+    return "Divine \"Jim Jnr\" Quantitative Sniper Engine is Live."
 
 def self_ping_loop():
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
@@ -321,11 +324,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine & Jim Jnr Sniper Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **Matrix Active.**", 
+            f"🔓 **Divine \"Jim Jnr\" Sniper Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **Matrix Active.**", 
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
+
+async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_active
+    if update.effective_user.id not in authorized_users:
+        return
+    bot_active = False
+    await update.message.reply_text("🌙 **[OFF]** Divine \"Jim Jnr\" Engine is asleep. Signals muted.", parse_mode="Markdown")
+
+async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_active
+    if update.effective_user.id not in authorized_users:
+        return
+    bot_active = True
+    await update.message.reply_text("☀️ **[ON]** Divine \"Jim Jnr\" Engine is active. Scanning signals!", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -349,17 +366,20 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     news_active, news_reason = is_high_impact_news_time("GC=F")
-    status_msg = "🟢 Optimal (Active)"
-    if news_active:
+    if not bot_active:
+        status_msg = "🌙 Paused (Off)"
+    elif news_active:
         status_msg = f"⚠️ News Shield: {news_reason}"
     elif daily_losses_count >= 3:
         status_msg = f"🛑 Daily Limit Hit ({daily_losses_count}/3)"
+    else:
+        status_msg = "🟢 Optimal (Active)"
 
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     total_samples = len(trade_history)
 
     stats_text = (
-        f"📊 **Divine Matrix Performance:**\n"
+        f"📊 **Divine \"Jim Jnr\" Performance:**\n"
         f"• Trades: `{total_samples}` | Win Rate: `{win_rate:.1f}%`\n"
         f"• Wins: {wins} | Losses: {losses} | PF: `{profit_factor:.2f}`\n"
         f"• Balance Guard: `${current_account_balance:.2f}`\n"
@@ -388,10 +408,12 @@ async def hourly_heartbeat_loop(app):
     while True:
         try:
             await asyncio.sleep(3600)
+            if not bot_active:
+                continue
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, _, _, _ = get_quantitative_performance_metrics()
-                heartbeat_msg = f"🟢 [HEARTBEAT] Divine Engine Active | Win Rate: `{win_rate:.1f}%`"
+                heartbeat_msg = f"🟢 [HEARTBEAT] Divine \"Jim Jnr\" Active | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop error: {e}")
@@ -438,8 +460,7 @@ async def live_chart_guidance_loop(app):
                     active_trades.pop(label, None)
                     continue
 
-                # --- OPTION B: SMART CHART CHOP / INVALIDATION CHECK (NO TIME LIMIT) ---
-                # Checks if Z-score flips completely against our trade direction indicating structural stall/reversal
+                # --- OPTION B: SMART CHART CHOP / INVALIDATION CHECK ---
                 current_z = float(df_live['z_score'].iloc[-1]) if 'z_score' in df_live.columns and pd.notna(df_live['z_score'].iloc[-1]) else 0.0
                 invalidation_triggered = False
                 if trade_type == "BUY" and current_z > 1.0:
@@ -450,10 +471,9 @@ async def live_chart_guidance_loop(app):
                 if invalidation_triggered and not trade.get("invalidation_alerted", False):
                     trade["invalidation_alerted"] = True
                     inv_msg = (
-                        f"⚠️ **[MARKET STALL / CHOP DETECTED] - {label}**\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"Momentum has reversed against our edge (`Z:{current_z:.2f}`).\n"
-                        f"👉 **Close trade manually on MetaTrader and clear position.**"
+                        f"⚠️ **[MARKET STALL] - {label}**\n"
+                        f"Momentum reversed (`Z:{current_z:.2f}`).\n"
+                        f"👉 **Close trade manually on MT5.**"
                     )
                     if target_user and authorized_users:
                         await app.bot.send_message(chat_id=target_user, text=inv_msg, parse_mode="Markdown")
@@ -468,8 +488,7 @@ async def live_chart_guidance_loop(app):
                     if (trade_type == "BUY" and current_price >= halfway_target) or (trade_type == "SELL" and current_price <= halfway_target):
                         trade["breakeven_alerted"] = True
                         guidance_msg = (
-                            f"💡 **[GUIDANCE ALERT] - {label}**\n"
-                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"💡 **[GUIDANCE] - {label}**\n"
                             f"Price reached halfway (`{current_price:.2f}`).\n"
                             f"👉 **Move SL to Breakeven (`{entry:.2f}`) & Take Partials!**"
                         )
@@ -494,13 +513,17 @@ async def signal_loop(app):
                 daily_loss_limit_alert_sent = False
                 last_signals.clear()
 
+            if not bot_active:
+                await asyncio.sleep(10)
+                continue
+
             if daily_losses_count >= 3:
                 if not daily_loss_limit_alert_sent:
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="🛑 **[DAILY LOSS LIMIT]**\n3 losses hit. Execution paused.",
+                            text="🛑 **[DAILY LIMIT]**\n3 losses hit. Execution paused.",
                             parse_mode="Markdown"
                         )
                     daily_loss_limit_alert_sent = True
@@ -511,7 +534,7 @@ async def signal_loop(app):
 
             for ticker, label in all_assets.items():
                 if label in active_trades:
-                    continue  # Strict single active trade lock per asset
+                    continue  
 
                 if not is_active_trading_session(ticker):
                     continue
@@ -538,7 +561,7 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **DIVINE & JIM JNR SNIPER SIGNAL**\n"
+                        f"💎 **DIVINE \"JIM JNR\" SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** {label}\n"
                         f"⚙️ **Model:** `{strategy_name}`\n"
@@ -583,6 +606,8 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("off", off_command))
+    app.add_handler(CommandHandler("on", on_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
 
@@ -592,7 +617,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Divine & Jim Jnr Quantitative Sniper Engine Running...")
+    logging.info("Divine \"Jim Jnr\" Quantitative Sniper Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
