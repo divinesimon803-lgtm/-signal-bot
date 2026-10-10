@@ -29,14 +29,14 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 # --- ACCOUNT BALANCE MANAGEMENT ---
 current_account_balance = 10.00  # Default micro-account balance guard baseline
 
-# --- DAILY LOSS LIMIT & SIMONS STATISTICAL MATRIX ---
+# --- DAILY LOSS LIMIT & DIVINE QUANT MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
 daily_loss_limit_alert_sent = False
 
 # --- ASSET UNIVERSE ---
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",   # Gold Sniper (Mon-Fri)
+    "GC=F": "XAUUSD",    # Gold Sniper (Mon-Fri)
     "BTC-USD": "BTCUSD" # Bitcoin active 24/7
 }
 
@@ -115,7 +115,6 @@ def is_high_impact_news_time(ticker="GC=F"):
                         if -15 <= time_diff <= 30:
                             return True, f"High-Impact News Event: {ev.get('title')} ({ev.get('country')})"
         
-        # Weekend volatility windows apply to traditional assets like Gold, but NOT 24/7 crypto
         if ticker != "BTC-USD":
             if now_utc.weekday() == 4 and now_utc.hour >= 20:
                 return True, "Weekend Market Close Volatility Window"
@@ -134,7 +133,7 @@ flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def home():
-    return "Ultra-Strict Quantitative Sniper Engine is Live."
+    return "Divine & Jim Jnr Quantitative Sniper Engine is Live."
 
 def self_ping_loop():
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
@@ -196,7 +195,6 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
         
-        # Z-Score Calculation (20-period rolling)
         rolling_mean = close_series.rolling(window=20).mean()
         rolling_std = close_series.rolling(window=20).std()
         df['z_score'] = (close_series - rolling_mean) / rolling_std
@@ -224,7 +222,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- ULTRA-STRICT GOLD (XAUUSD) STRATEGY (Z-SCORE 1.5) ---
+# --- GOLD STRATEGY ---
 def get_gold_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     if h1_bias == "NEUTRAL":
@@ -267,9 +265,9 @@ def get_gold_strategy_signal(ticker):
         tp = round(entry - (sl_distance * 2.0), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"ULTRA-GOLD-SNIPER ({h1_bias}, Z:{z_score:.2f})"
+    return sig, entry, sl, tp, rec_lot, rsi, f"DIVINE-GOLD ({h1_bias}, Z:{z_score:.2f})"
 
-# --- ULTRA-STRICT BITCOIN (BTCUSD) STRATEGY (Z-SCORE 1.6) ---
+# --- BITCOIN STRATEGY ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -307,7 +305,7 @@ def get_bitcoin_strategy_signal(ticker):
         tp = round(entry - (sl_distance * 2.0), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"ULTRA-BTC-SNIPER (Z:{z_score:.2f})"
+    return sig, entry, sl, tp, rec_lot, rsi, f"DIVINE-BTC (Z:{z_score:.2f})"
 
 def get_strategy_signal(ticker):
     if ticker == "GC=F":
@@ -323,7 +321,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Jim Simons Quantitative Sniper Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **24/7 Z-Score Matrix Active.**", 
+            f"🔓 **Divine & Jim Jnr Sniper Online.**\n💰 Balance Guard: **${current_account_balance:.2f}**\n📊 **Matrix Active.**", 
             parse_mode="Markdown"
         )
     else:
@@ -339,38 +337,37 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             new_bal = float(args[0])
             current_account_balance = new_bal
-            await update.message.reply_text(f"✅ Balance Updated: Strict risk configured for ${current_account_balance:.2f}.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Balance Updated: ${current_account_balance:.2f}.", parse_mode="Markdown")
             return
         except ValueError:
             pass
             
-    await update.message.reply_text(f"💰 Current Account Balance: ${current_account_balance:.2f}\n*To update:* /balance 10.00", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 Balance: ${current_account_balance:.2f}\n*Update:* `/balance 10.00`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
     news_active, news_reason = is_high_impact_news_time("GC=F")
-    status_msg = "🟢 Optimal (24/7 Sniper Active)"
+    status_msg = "🟢 Optimal (Active)"
     if news_active:
-        status_msg = f"⚠️ Paused (News Shield): {news_reason}"
+        status_msg = f"⚠️ News Shield: {news_reason}"
     elif daily_losses_count >= 3:
-        status_msg = f"🛑 Paused (Daily Loss Limit Reached: {daily_losses_count}/3)"
+        status_msg = f"🛑 Daily Limit Hit ({daily_losses_count}/3)"
 
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     total_samples = len(trade_history)
 
     stats_text = (
-        f"📊 **Simons Matrix Performance:**\n"
-        f"• Total Samples Logged: `{total_samples}`\n"
-        f"• Win Rate: `{win_rate:.2f}%` (Wins: {wins} | Losses: {losses})\n"
-        f"• Profit Factor: `{profit_factor:.2f}`\n"
-        f"• Active Balance Guard: `${current_account_balance:.2f}`\n"
+        f"📊 **Divine Matrix Performance:**\n"
+        f"• Trades: `{total_samples}` | Win Rate: `{win_rate:.1f}%`\n"
+        f"• Wins: {wins} | Losses: {losses} | PF: `{profit_factor:.2f}`\n"
+        f"• Balance Guard: `${current_account_balance:.2f}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
     )
 
     if not active_trades:
-        await update.message.reply_text(stats_text + f"State: {status_msg}\nNo active sniper trade.", parse_mode="Markdown")
+        await update.message.reply_text(stats_text + f"State: {status_msg}\nNo active trade.", parse_mode="Markdown")
         return
     
     msg = stats_text + f"State: {status_msg}\n━━━━━━━━━━━━━━━━━━━\n"
@@ -382,7 +379,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += (
             f"📌 **{label} ({trade['type']})**\n"
             f"• Entry: `{trade['entry']:.2f}` | Live: `{current_price:.2f}`\n"
-            f"• Stop Loss: `{trade['sl']:.2f}` | Take Profit: `{trade['tp']:.2f}`\n\n"
+            f"• SL: `{trade['sl']:.2f}` | TP: `{trade['tp']:.2f}`\n\n"
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -394,13 +391,13 @@ async def hourly_heartbeat_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
                 win_rate, _, _, _ = get_quantitative_performance_metrics()
-                heartbeat_msg = f"🟢 [HEARTBEAT] Sniper Engine Active | Balance: `${current_account_balance:.2f}` | Win Rate: `{win_rate:.1f}%`"
+                heartbeat_msg = f"🟢 [HEARTBEAT] Divine Engine Active | Win Rate: `{win_rate:.1f}%`"
                 await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Heartbeat loop error: {e}")
             await asyncio.sleep(60)
 
-# --- REAL-TIME GUIDANCE LOOP ---
+# --- REAL-TIME GUIDANCE & SMART CHART MANAGEMENT LOOP ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
@@ -410,39 +407,74 @@ async def live_chart_guidance_loop(app):
                 continue
 
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-            current_time = datetime.datetime.now(datetime.timezone.utc)
 
             for label, trade in list(active_trades.items()):
-                trade_age = (current_time - trade.get("timestamp", current_time)).total_seconds()
-                if trade_age > 14400: # 4 hours max expiry
-                    active_trades.pop(label, None)
-                    if target_user and authorized_users:
-                        await app.bot.send_message(chat_id=target_user, text=f"🔄 [AUTO-RESET] Stale trade cleared for {label}.", parse_mode="Markdown")
-                    continue
-
                 y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
-                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="1d")
-                if df_live is None or len(df_live) < 10:
+                df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="2d")
+                if df_live is None or len(df_live) < 20:
                     continue
 
                 current_price = float(df_live['Close'].iloc[-1])
                 trade_type = trade["type"]
+                entry = trade["entry"]
                 tp = trade["tp"]
                 sl = trade["sl"]
 
+                # --- TARGET CHECK (TP) ---
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    msg = f"🎯 [TAKE PROFIT SECURED!] - {label}\nPrice hit target at `{tp:.2f}`. Statistical Edge Realized! 🚀"
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    msg = f"🎯 **[TP SECURED] - {label}**\nPrice hit target at `{tp:.2f}`. Edge Realized! 🚀"
+                    if target_user and authorized_users:
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("WIN")
                     active_trades.pop(label, None)
                     continue
 
+                # --- STOP LOSS CHECK (SL) ---
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    msg = f"🛑 [STOP LOSS HIT] - {label}\nRisk boundary defended at `{sl:.2f}`."
-                    await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
+                    msg = f"🛑 **[SL HIT] - {label}**\nRisk boundary defended at `{sl:.2f}`."
+                    if target_user and authorized_users:
+                        await app.bot.send_message(chat_id=target_user, text=msg, parse_mode="Markdown")
                     record_trade_outcome("LOSS")
                     active_trades.pop(label, None)
                     continue
+
+                # --- OPTION B: SMART CHART CHOP / INVALIDATION CHECK (NO TIME LIMIT) ---
+                # Checks if Z-score flips completely against our trade direction indicating structural stall/reversal
+                current_z = float(df_live['z_score'].iloc[-1]) if 'z_score' in df_live.columns and pd.notna(df_live['z_score'].iloc[-1]) else 0.0
+                invalidation_triggered = False
+                if trade_type == "BUY" and current_z > 1.0:
+                    invalidation_triggered = True
+                elif trade_type == "SELL" and current_z < -1.0:
+                    invalidation_triggered = True
+
+                if invalidation_triggered and not trade.get("invalidation_alerted", False):
+                    trade["invalidation_alerted"] = True
+                    inv_msg = (
+                        f"⚠️ **[MARKET STALL / CHOP DETECTED] - {label}**\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"Momentum has reversed against our edge (`Z:{current_z:.2f}`).\n"
+                        f"👉 **Close trade manually on MetaTrader and clear position.**"
+                    )
+                    if target_user and authorized_users:
+                        await app.bot.send_message(chat_id=target_user, text=inv_msg, parse_mode="Markdown")
+                    active_trades.pop(label, None)
+                    continue
+
+                # --- BREAK / MID-TRADE GUIDANCE ---
+                halfway_target = entry + ((tp - entry) / 2.0) if trade_type == "BUY" else entry - ((entry - tp) / 2.0)
+                breakeven_alerted = trade.get("breakeven_alerted", False)
+
+                if not breakeven_alerted:
+                    if (trade_type == "BUY" and current_price >= halfway_target) or (trade_type == "SELL" and current_price <= halfway_target):
+                        trade["breakeven_alerted"] = True
+                        guidance_msg = (
+                            f"💡 **[GUIDANCE ALERT] - {label}**\n"
+                            f"━━━━━━━━━━━━━━━━━━━\n"
+                            f"Price reached halfway (`{current_price:.2f}`).\n"
+                            f"👉 **Move SL to Breakeven (`{entry:.2f}`) & Take Partials!**"
+                        )
+                        if target_user and authorized_users:
+                            await app.bot.send_message(chat_id=target_user, text=guidance_msg, parse_mode="Markdown")
 
         except Exception as e:
             logging.error(f"Guidance loop error: {e}")
@@ -468,7 +500,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="🛑 [DAILY LOSS LIMIT REACHED]\n3 losses recorded today. Automated execution paused to protect capital.",
+                            text="🛑 **[DAILY LOSS LIMIT]**\n3 losses hit. Execution paused.",
                             parse_mode="Markdown"
                         )
                     daily_loss_limit_alert_sent = True
@@ -484,7 +516,6 @@ async def signal_loop(app):
                 if not is_active_trading_session(ticker):
                     continue
 
-                # Asset-specific news shield check (Bitcoin skips weekend close filter)
                 is_news, news_desc = is_high_impact_news_time(ticker)
                 if is_news:
                     if not news_alert_sent:
@@ -492,7 +523,7 @@ async def signal_loop(app):
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user, 
-                                text=f"🛡 [NEWS SHIELD ENGAGED - {label}]\nPaused due to: *{news_desc}*.", 
+                                text=f"🛡 **[NEWS SHIELD] - {label}**\nPaused: *{news_desc}*.", 
                                 parse_mode="Markdown"
                             )
                     continue
@@ -507,7 +538,7 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **JIM SIMONS 24/7 SNIPER SIGNAL**\n"
+                        f"💎 **DIVINE & JIM JNR SNIPER SIGNAL**\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"📌 **Asset:** {label}\n"
                         f"⚙️ **Model:** `{strategy_name}`\n"
@@ -515,7 +546,7 @@ async def signal_loop(app):
                         f"🔹 **Entry:** `{entry:.2f}`\n"
                         f"🔴 **Stop Loss:** `{sl:.2f}`\n"
                         f"🎯 **Take Profit:** `{tp:.2f}`\n"
-                        f"⚖️ **Lot Size:** {rec_lot} *(Balance: ${current_account_balance:.2f})*\n"
+                        f"⚖️ **Lot:** `{rec_lot}` *(${current_account_balance:.2f})*\n"
                         f"━━━━━━━━━━━━━━━━━━━\n"
                         f"🛡 *High-Conviction Edge Verified.*"
                     )
@@ -528,7 +559,9 @@ async def signal_loop(app):
                         "entry": entry,
                         "sl": sl,
                         "tp": tp,
-                        "timestamp": datetime.datetime.now(datetime.timezone.utc)
+                        "timestamp": datetime.datetime.now(datetime.timezone.utc),
+                        "breakeven_alerted": False,
+                        "invalidation_alerted": False
                     }
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
@@ -553,15 +586,13 @@ def main():
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
 
-    # Start Flask Web Server
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Start Keep-Alive Anti-Sleep Self-Ping Engine
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Jim Simons Quantitative Sniper Engine Running...")
+    logging.info("Divine & Jim Jnr Quantitative Sniper Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
