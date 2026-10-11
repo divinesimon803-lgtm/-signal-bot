@@ -344,8 +344,16 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades
     if update.effective_user.id not in authorized_users:
         return
-    active_trades.clear()
-    await update.message.reply_text("🧹 **Active trades cleared.**", parse_mode="Markdown")
+    
+    args = context.args
+    if args and args[0].upper() in ["WIN", "LOSS"]:
+        outcome = args[0].upper()
+        record_trade_outcome(outcome)
+        active_trades.clear()
+        await update.message.reply_text(f"🧹 **Trade recorded as {outcome} & cleared.**", parse_mode="Markdown")
+    else:
+        active_trades.clear()
+        await update.message.reply_text("🧹 **Active trades cleared.**", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
