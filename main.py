@@ -1,12 +1,13 @@
 import asyncio
 import datetime
+import json
 import logging
 import os
 import pandas as pd
 import requests
 import ta
 import yfinance as yf
-from flask import Flask
+from flask import Flask, jsonify
 from threading import Thread
 from telegram import Update
 from telegram.request import HTTPXRequest
@@ -27,10 +28,10 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
 RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 
 # --- ACCOUNT BALANCE MANAGEMENT ---
-current_account_balance = 10.00  # Default micro-account balance guard baseline
+current_account_balance = 10.00  # Default micro-account baseline
 
 # --- BOT TOGGLE CONTROL ---
-bot_active = True  # Controls signal generation
+bot_active = True  # Controls signal generation & keep-alive ping state
 
 # --- DAILY LOSS LIMIT & DIVINE QUANT MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
@@ -54,9 +55,28 @@ last_signals = {}
 authorized_users = set()
 active_trades = {}  # Single active trade management per asset
 
-# --- QUANTITATIVE PERFORMANCE TRACKER ---
+# --- PERSISTENT QUANTITATIVE PERFORMANCE TRACKER ---
+HISTORY_FILE = "history.json"
 trade_history = []  
-MAX_HISTORY_LEN = 100  
+
+def load_trade_history():
+    global trade_history
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                trade_history = json.load(f)
+        except Exception as e:
+            logging.error(f"Error loading history: {e}")
+            trade_history = []
+
+def save_trade_history():
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(trade_history, f)
+    except Exception as e:
+        logging.error(f"Error saving history: {e}")
+
+load_trade_history()
 
 def record_trade_outcome(outcome):
     global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent
@@ -67,8 +87,7 @@ def record_trade_outcome(outcome):
         daily_loss_limit_alert_sent = False
 
     trade_history.append(outcome)
-    if len(trade_history) > MAX_HISTORY_LEN:
-        trade_history.pop(0)  
+    save_trade_history()  # Always save to disk so history is never lost
 
     if outcome == "LOSS":
         daily_losses_count += 1
@@ -116,13 +135,13 @@ def is_high_impact_news_time(ticker="GC=F"):
                         ev_time = datetime.datetime.fromisoformat(ev_date_str.replace("Z", "+00:00"))
                         time_diff = (ev_time - now_utc).total_seconds() / 60.0
                         if -15 <= time_diff <= 30:
-                            return True, f"High-Impact News: {ev.get('title')}"
+                            return True, f"News: {ev.get('title')}"
         
         if ticker != "BTC-USD":
             if now_utc.weekday() == 4 and now_utc.hour >= 20:
-                return True, "Weekend Close Window"
+                return True, "Weekend Close"
             if now_utc.weekday() == 6 and now_utc.hour < 1:
-                return True, "Weekend Open Window"
+                return True, "Weekend Open"
 
     except Exception as e:
         logging.error(f"News check API error: {e}")
@@ -131,25 +150,30 @@ def is_high_impact_news_time(ticker="GC=F"):
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEB SERVER & KEEP-ALIVE PING ---
+# --- FLASK WEB SERVER & DYNAMIC KEEP-ALIVE ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
-def home():
-    return "Divine \"Jim Jnr\" Quantitative Sniper Engine is Live."
+@flask_app.route('/health')
+def health_check():
+    if bot_active:
+        return jsonify({"status": "ACTIVE", "code": 200}), 200
+    else:
+        return jsonify({"status": "OFF", "code": 503}), 503
 
 def self_ping_loop():
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not app_url:
-        app_url = "https://signal-bot-t8ud.onrender.com"
+        app_url = "https://signal-bot-t8ud.onrender.com/health"
     
     while True:
         try:
-            requests.get(app_url, timeout=10)
+            if bot_active:
+                requests.get(app_url, timeout=10)
         except Exception as e:
-            logging.error(f"Self-ping keep-alive error: {e}")
+            logging.error(f"Self-ping error: {e}")
         import time
-        time.sleep(300)
+        time.sleep(180)  # Pings every 3 minutes to guarantee zero sleep
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -320,7 +344,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine \"Jim Jnr\" Online.**\n💰 Balance: **${current_account_balance:.2f}**", 
+            f"🔓 **Bot Online**\nBalance: `${current_account_balance:.2f}`", 
             parse_mode="Markdown"
         )
     else:
@@ -331,14 +355,14 @@ async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     bot_active = False
-    await update.message.reply_text("🌙 **[OFF]** Engine is asleep.", parse_mode="Markdown")
+    await update.message.reply_text("🌙 **Bot OFF**", parse_mode="Markdown")
 
 async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if update.effective_user.id not in authorized_users:
         return
     bot_active = True
-    await update.message.reply_text("☀️ **[ON]** Engine is active.", parse_mode="Markdown")
+    await update.message.reply_text("☀️ **Bot ON**", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades
@@ -350,10 +374,10 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         outcome = args[0].upper()
         record_trade_outcome(outcome)
         active_trades.clear()
-        await update.message.reply_text(f"🧹 **Trade recorded as {outcome} & cleared.**", parse_mode="Markdown")
+        await update.message.reply_text(f"🧹 Recorded: **{outcome}**", parse_mode="Markdown")
     else:
         active_trades.clear()
-        await update.message.reply_text("🧹 **Active trades cleared.**", parse_mode="Markdown")
+        await update.message.reply_text("🧹 Trades Cleared.", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -363,11 +387,11 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args:
         try:
             current_account_balance = float(args[0])
-            await update.message.reply_text(f"✅ Balance: ${current_account_balance:.2f}.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
             return
         except ValueError:
             pass
-    await update.message.reply_text(f"💰 Balance: ${current_account_balance:.2f}", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
@@ -379,7 +403,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif news_active:
         state = f"News Shield ({news_reason})"
     elif daily_losses_count >= 3:
-        state = "Daily Limit (3/3)"
+        state = "Limit (3/3)"
     else:
         state = "Active"
 
@@ -403,18 +427,22 @@ async def hourly_heartbeat_loop(app):
                 continue
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
-                win_rate, _, _, _ = get_quantitative_performance_metrics()
-                await app.bot.send_message(chat_id=target_user, text=f"🟢 **[HEARTBEAT]** Alive | Win Rate: `{win_rate:.1f}%`", parse_mode="Markdown")
+                win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                await app.bot.send_message(
+                    chat_id=target_user, 
+                    text=f"🟢 **Heartbeat** | `{win_rate:.1f}%` ({wins}W/{losses}L)", 
+                    parse_mode="Markdown"
+                )
         except Exception as e:
             logging.error(f"Heartbeat error: {e}")
             await asyncio.sleep(60)
 
-# --- REAL-TIME GUIDANCE & MANAGEMENT LOOP ---
+# --- INSTANT REAL-TIME GUIDANCE & MANAGEMENT LOOP ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
         try:
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)  # Fast 3-second check for instant alerts
             if not active_trades:
                 continue
 
@@ -432,17 +460,29 @@ async def live_chart_guidance_loop(app):
                 tp = trade["tp"]
                 sl = trade["sl"]
 
+                # INSTANT TP HIT ALERT
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    if target_user and authorized_users:
-                        await app.bot.send_message(chat_id=target_user, text=f"🎯 **[TP HIT] - {label}**", parse_mode="Markdown")
                     record_trade_outcome("WIN")
+                    win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                    if target_user and authorized_users:
+                        await app.bot.send_message(
+                            chat_id=target_user, 
+                            text=f"🎯 **TP HIT: {label}** | Win Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
+                            parse_mode="Markdown"
+                        )
                     active_trades.pop(label, None)
                     continue
 
+                # INSTANT SL HIT ALERT
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    if target_user and authorized_users:
-                        await app.bot.send_message(chat_id=target_user, text=f"🛑 **[SL HIT] - {label}**", parse_mode="Markdown")
                     record_trade_outcome("LOSS")
+                    win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                    if target_user and authorized_users:
+                        await app.bot.send_message(
+                            chat_id=target_user, 
+                            text=f"🛑 **SL HIT: {label}** | Win Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
+                            parse_mode="Markdown"
+                        )
                     active_trades.pop(label, None)
                     continue
 
@@ -450,18 +490,21 @@ async def live_chart_guidance_loop(app):
                 if (trade_type == "BUY" and current_z > 1.0) or (trade_type == "SELL" and current_z < -1.0):
                     if target_user and authorized_users and not trade.get("invalidation_alerted", False):
                         trade["invalidation_alerted"] = True
-                        await app.bot.send_message(chat_id=target_user, text=f"⚠️ **[STALL] - {label}** | Close manually.", parse_mode="Markdown")
+                        await app.bot.send_message(
+                            chat_id=target_user, 
+                            text=f"⚠️ **Stall: {label}** | Close manually.", 
+                            parse_mode="Markdown"
+                        )
                     active_trades.pop(label, None)
                     continue
 
         except Exception as e:
             logging.error(f"Guidance error: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
 # --- SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
     global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent
-    news_alert_sent = False
 
     while True:
         try:
@@ -522,9 +565,9 @@ async def signal_loop(app):
                     }
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
-            await asyncio.sleep(15)
+            await asyncio.sleep(10)
 
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
