@@ -121,33 +121,6 @@ def is_active_trading_session(ticker):
 
     return True
 
-# --- AUTOMATIC NEWS & WEEKEND CIRCUIT BREAKER ---
-def is_high_impact_news_time(ticker="GC=F"):
-    try:
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        response = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=5)
-        if response.status_code == 200:
-            events = response.json()
-            for ev in events:
-                if ev.get("impact") == "High":
-                    ev_date_str = ev.get("date")
-                    if ev_date_str:
-                        ev_time = datetime.datetime.fromisoformat(ev_date_str.replace("Z", "+00:00"))
-                        time_diff = (ev_time - now_utc).total_seconds() / 60.0
-                        if -15 <= time_diff <= 30:
-                            return True, f"News: {ev.get('title')}"
-        
-        if ticker != "BTC-USD":
-            if now_utc.weekday() == 4 and now_utc.hour >= 20:
-                return True, "Weekend Close"
-            if now_utc.weekday() == 6 and now_utc.hour < 1:
-                return True, "Weekend Open"
-
-    except Exception as e:
-        logging.error(f"News check API error: {e}")
-
-    return False, ""
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- FLASK WEB SERVER & DYNAMIC KEEP-ALIVE ---
@@ -397,11 +370,8 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    news_active, news_reason = is_high_impact_news_time("GC=F")
     if not bot_active:
         state = "Off"
-    elif news_active:
-        state = f"News Shield ({news_reason})"
     elif daily_losses_count >= 3:
         state = "Limit (3/3)"
     else:
@@ -456,7 +426,6 @@ async def live_chart_guidance_loop(app):
 
                 current_price = float(df_live['Close'].iloc[-1])
                 trade_type = trade["type"]
-                entry = trade["entry"]
                 tp = trade["tp"]
                 sl = trade["sl"]
 
@@ -530,10 +499,6 @@ async def signal_loop(app):
                     continue  
 
                 if not is_active_trading_session(ticker):
-                    continue
-
-                is_news, news_desc = is_high_impact_news_time(ticker)
-                if is_news:
                     continue
 
                 sig, entry, sl, tp, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
