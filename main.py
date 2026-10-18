@@ -213,7 +213,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- EURUSD STRATEGY (NEW) ---
+# --- EURUSD STRATEGY ---
 def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
@@ -417,6 +417,7 @@ async def live_chart_guidance_loop(app):
                 trade_type = trade["type"]
                 tp = trade["tp"]
                 sl = trade["sl"]
+                entry = trade["entry"]
 
                 # INSTANT TP HIT ALERT
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
@@ -444,6 +445,30 @@ async def live_chart_guidance_loop(app):
                     active_trades.pop(label, None)
                     continue
 
+                # BREAK-EVEN / RISK-FREE NOTIFICATION CHECK
+                if not trade.get("breakeven_alerted", False):
+                    if trade_type == "BUY":
+                        halfway_target = entry + (tp - entry) * 0.5
+                        if current_price >= halfway_target:
+                            trade["breakeven_alerted"] = True
+                            if target_user and authorized_users:
+                                await app.bot.send_message(
+                                    chat_id=target_user,
+                                    text=f"🔒 **Break-Even Alert: {label}** | Move your SL to entry price (`{entry}`) to make this trade 100% risk-free!",
+                                    parse_mode="Markdown"
+                                )
+                    elif trade_type == "SELL":
+                        halfway_target = entry - (entry - tp) * 0.5
+                        if current_price <= halfway_target:
+                            trade["breakeven_alerted"] = True
+                            if target_user and authorized_users:
+                                await app.bot.send_message(
+                                    chat_id=target_user,
+                                    text=f"🔒 **Break-Even Alert: {label}** | Move your SL to entry price (`{entry}`) to make this trade 100% risk-free!",
+                                    parse_mode="Markdown"
+                                )
+
+                # INVALIDATION STALL ALERT
                 current_z = float(df_live['z_score'].iloc[-1]) if 'z_score' in df_live.columns and pd.notna(df_live['z_score'].iloc[-1]) else 0.0
                 if (trade_type == "BUY" and current_z > 1.0) or (trade_type == "SELL" and current_z < -1.0):
                     if target_user and authorized_users and not trade.get("invalidation_alerted", False):
