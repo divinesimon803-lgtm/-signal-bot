@@ -40,12 +40,12 @@ daily_loss_limit_alert_sent = False
 
 # --- ASSET UNIVERSE ---
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",    # Gold Sniper (Mon-Fri)
-    "BTC-USD": "BTCUSD" # Bitcoin active 24/7
+    "EURUSD=X": "EURUSD",  # EUR/USD Major Pair (Mon-Fri)
+    "BTC-USD": "BTCUSD"    # Bitcoin active 24/7 (UNTOUCHED)
 }
 
 WEEKEND_ASSETS = {
-    "BTC-USD": "BTCUSD" # Bitcoin active 24/7
+    "BTC-USD": "BTCUSD"   # Bitcoin active 24/7 (UNTOUCHED)
 }
 
 TIMEFRAME_M15 = "15m"
@@ -107,32 +107,27 @@ def get_quantitative_performance_metrics():
 def is_active_trading_session(ticker):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
-    hour = now_utc.hour
 
     if ticker == "BTC-USD":
         return True
 
-    if ticker == "GC=F":
-        if weekday >= 5:  
+    if ticker == "EURUSD=X":
+        if weekday >= 5:  # Weekend closed for forex
             return False
-        if 7 <= hour < 20:
-            return True
-        return False
+        return True
 
     return True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEB SERVER & DYNAMIC KEEP-ALIVE ---
+# --- FLASK WEB SERVER & PERMANENT KEEP-ALIVE ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 @flask_app.route('/health')
 def health_check():
-    if bot_active:
-        return jsonify({"status": "ACTIVE", "code": 200}), 200
-    else:
-        return jsonify({"status": "OFF", "code": 503}), 503
+    # Always return 200 OK so Render never treats it as down or puts it to sleep
+    return jsonify({"status": "ACTIVE" if bot_active else "PAUSED", "code": 200}), 200
 
 def self_ping_loop():
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
@@ -141,8 +136,7 @@ def self_ping_loop():
     
     while True:
         try:
-            if bot_active:
-                requests.get(app_url, timeout=10)
+            requests.get(app_url, timeout=10)
         except Exception as e:
             logging.error(f"Self-ping error: {e}")
         import time
@@ -219,52 +213,47 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- GOLD STRATEGY ---
-def get_gold_strategy_signal(ticker):
+# --- EURUSD STRATEGY (NEW) ---
+def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
-    if h1_bias == "NEUTRAL":
-        return None, None, None, None, None, None, None
-
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
-    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']) or pd.isna(c['ema50']):
+    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
-    close_p = float(c['Close'])
     rsi = float(c['rsi14'])
     z_score = float(c['z_score'])
-    ema50 = float(c['ema50'])
 
     sig = None
-    if h1_bias == "BULLISH" and z_score <= -1.5 and close_p >= ema50 and (30 <= rsi <= 60):
+    if z_score <= -1.4 and rsi < 42 and h1_bias != "BEARISH":
         sig = "BUY"
-    elif h1_bias == "BEARISH" and z_score >= 1.5 and close_p <= ema50 and (40 <= rsi <= 70):
+    elif z_score >= 1.4 and rsi > 58 and h1_bias != "BULLISH":
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 0.5  
-    sl_distance = max(atr * 1.5, 12.0)  
+    spread_buffer = 0.0001  # 1 pip forex spread buffer
+    sl_distance = max(atr * 1.4, 0.0012)  # Minimum 12 pips
 
     if sig == "BUY":
-        entry = round(live_price + spread_buffer, 2)
-        sl = round(entry - sl_distance, 2)
-        tp = round(entry + (sl_distance * 2.0), 2)
+        entry = round(live_price + spread_buffer, 5)
+        sl = round(entry - sl_distance, 5)
+        tp = round(entry + (sl_distance * 2.0), 5)
     else:
-        entry = round(live_price - spread_buffer, 2)
-        sl = round(entry + sl_distance, 2)
-        tp = round(entry - (sl_distance * 2.0), 2)
+        entry = round(live_price - spread_buffer, 5)
+        sl = round(entry + sl_distance, 5)
+        tp = round(entry - (sl_distance * 2.0), 5)
 
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"GOLD ({h1_bias}, Z:{z_score:.2f})"
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance * 10000)
+    return sig, entry, sl, tp, rec_lot, rsi, f"EURUSD (Z:{z_score:.2f})"
 
-# --- BITCOIN STRATEGY ---
+# --- BITCOIN STRATEGY (UNTOUCHED) ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -304,8 +293,8 @@ def get_bitcoin_strategy_signal(ticker):
     return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})"
 
 def get_strategy_signal(ticker):
-    if ticker == "GC=F":
-        return get_gold_strategy_signal(ticker)
+    if ticker == "EURUSD=X":
+        return get_eurusd_strategy_signal(ticker)
     elif ticker == "BTC-USD":
         return get_bitcoin_strategy_signal(ticker)
     return None, None, None, None, None, None, None
@@ -384,7 +373,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "No active trade."
     else:
         for label, trade in active_trades.items():
-            text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']:.2f}`\n• SL: `{trade['sl']:.2f}` | TP: `{trade['tp']:.2f}`"
+            text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -419,7 +408,7 @@ async def live_chart_guidance_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
 
             for label, trade in list(active_trades.items()):
-                y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
+                y_ticker = "EURUSD=X" if label == "EURUSD" else "BTC-USD"
                 df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="2d")
                 if df_live is None or len(df_live) < 10:
                     continue
@@ -511,8 +500,8 @@ async def signal_loop(app):
 
                     signal_text = (
                         f"💎 **SIGNAL: {label}** {dir_icon} `{sig}`\n"
-                        f"• Entry: `{entry:.2f}`\n"
-                        f"• SL: `{sl:.2f}` | TP: `{tp:.2f}`\n"
+                        f"• Entry: `{entry}`\n"
+                        f"• SL: `{sl}` | TP: `{tp}`\n"
                         f"• Lot: `{rec_lot}`"
                     )
 
