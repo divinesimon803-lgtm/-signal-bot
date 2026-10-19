@@ -9,11 +9,12 @@ import ta
 import yfinance as yf
 from flask import Flask, jsonify
 from threading import Thread
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes,
 )
 
@@ -21,6 +22,7 @@ from telegram.ext import (
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BOT_PASSCODE = os.getenv("BOT_PASSCODE")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID) # Channel ID or @channelusername
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
@@ -41,11 +43,11 @@ daily_loss_limit_alert_sent = False
 # --- ASSET UNIVERSE ---
 WEEKDAY_ASSETS = {
     "EURUSD=X": "EURUSD",  # EUR/USD Major Pair (Mon-Fri)
-    "BTC-USD": "BTCUSD"    # Bitcoin active 24/7 (UNTOUCHED)
+    "BTC-USD": "BTCUSD"    # Bitcoin active 24/7
 }
 
 WEEKEND_ASSETS = {
-    "BTC-USD": "BTCUSD"   # Bitcoin active 24/7 (UNTOUCHED)
+    "BTC-USD": "BTCUSD"   # Bitcoin active 24/7
 }
 
 TIMEFRAME_M15 = "15m"
@@ -87,7 +89,7 @@ def record_trade_outcome(outcome):
         daily_loss_limit_alert_sent = False
 
     trade_history.append(outcome)
-    save_trade_history()  # Always save to disk so history is never lost
+    save_trade_history()  
 
     if outcome == "LOSS":
         daily_losses_count += 1
@@ -139,7 +141,7 @@ def self_ping_loop():
         except Exception as e:
             logging.error(f"Self-ping error: {e}")
         import time
-        time.sleep(180)  # Pings every 3 minutes to guarantee zero sleep
+        time.sleep(180)  # Pings every 3 minutes
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -212,7 +214,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- EURUSD STRATEGY ---
+# --- STRATEGIES ---
 def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
@@ -237,8 +239,8 @@ def get_eurusd_strategy_signal(ticker):
         return None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 0.0001  # 1 pip forex spread buffer
-    sl_distance = max(atr * 1.4, 0.0012)  # Minimum 12 pips
+    spread_buffer = 0.0001  
+    sl_distance = max(atr * 1.4, 0.0012)  
 
     if sig == "BUY":
         entry = round(live_price + spread_buffer, 5)
@@ -252,7 +254,6 @@ def get_eurusd_strategy_signal(ticker):
     rec_lot = calculate_dynamic_lot(ticker, sl_distance * 10000)
     return sig, entry, sl, tp, rec_lot, rsi, f"EURUSD (Z:{z_score:.2f})"
 
-# --- BITCOIN STRATEGY ---
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
@@ -297,6 +298,38 @@ def get_strategy_signal(ticker):
     elif ticker == "BTC-USD":
         return get_bitcoin_strategy_signal(ticker)
     return None, None, None, None, None, None, None
+
+# --- TELEGRAM BUTTON POSTING HANDLER ---
+async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "post_to_channel":
+        original_text = query.message.text
+        
+        # Strip out specific lot size for the public channel
+        channel_text = original_text
+        if "• Lot:" in channel_text:
+            lines = channel_text.split("\n")
+            new_lines = []
+            for line in lines:
+                if line.startswith("• Lot:"):
+                    new_lines.append("• Lot: Use your own calculated lot size!")
+                else:
+                    new_lines.append(line)
+            channel_text = "\n".join(new_lines)
+
+        try:
+            await context.bot.send_message(
+                chat_id=TELEGRAM_CHANNEL_ID, 
+                text=channel_text, 
+                parse_mode="Markdown"
+            )
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("✅ **Posted to Channel successfully!**", parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Channel post error: {e}")
+            await query.message.reply_text(f"❌ Failed to post to channel: {e}", parse_mode="Markdown")
 
 # --- TELEGRAM COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,7 +433,7 @@ async def live_chart_guidance_loop(app):
     global active_trades
     while True:
         try:
-            await asyncio.sleep(3)  # Fast 3-second check for instant alerts
+            await asyncio.sleep(3)  # Fast 3-second check
             if not active_trades:
                 continue
 
@@ -418,6 +451,8 @@ async def live_chart_guidance_loop(app):
                 sl = trade["sl"]
                 entry = trade["entry"]
 
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
+
                 # INSTANT TP HIT ALERT
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     record_trade_outcome("WIN")
@@ -426,7 +461,8 @@ async def live_chart_guidance_loop(app):
                         await app.bot.send_message(
                             chat_id=target_user, 
                             text=f"🎯 **TP HIT: {label}** | Win Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            reply_markup=keyboard
                         )
                     active_trades.pop(label, None)
                     continue
@@ -439,33 +475,25 @@ async def live_chart_guidance_loop(app):
                         await app.bot.send_message(
                             chat_id=target_user, 
                             text=f"🛑 **SL HIT: {label}** | Win Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            reply_markup=keyboard
                         )
                     active_trades.pop(label, None)
                     continue
 
-                # BREAK-EVEN / RISK-FREE NOTIFICATION CHECK
+                # BREAK-EVEN NOTIFICATION CHECK
                 if not trade.get("breakeven_alerted", False):
-                    if trade_type == "BUY":
-                        halfway_target = entry + (tp - entry) * 0.5
-                        if current_price >= halfway_target:
-                            trade["breakeven_alerted"] = True
-                            if target_user and authorized_users:
-                                await app.bot.send_message(
-                                    chat_id=target_user,
-                                    text=f"🔒 **Break-Even Alert: {label}** | Move your SL to entry price (`{entry}`) to make this trade 100% risk-free!",
-                                    parse_mode="Markdown"
-                                )
-                    elif trade_type == "SELL":
-                        halfway_target = entry - (entry - tp) * 0.5
-                        if current_price <= halfway_target:
-                            trade["breakeven_alerted"] = True
-                            if target_user and authorized_users:
-                                await app.bot.send_message(
-                                    chat_id=target_user,
-                                    text=f"🔒 **Break-Even Alert: {label}** | Move your SL to entry price (`{entry}`) to make this trade 100% risk-free!",
-                                    parse_mode="Markdown"
-                                )
+                    halfway_target = entry + (tp - entry) * 0.5 if trade_type == "BUY" else entry - (entry - tp) * 0.5
+                    condition = (current_price >= halfway_target) if trade_type == "BUY" else (current_price <= halfway_target)
+                    if condition:
+                        trade["breakeven_alerted"] = True
+                        if target_user and authorized_users:
+                            await app.bot.send_message(
+                                chat_id=target_user,
+                                text=f"🔒 **Break-Even Alert: {label}**\nMove your SL to entry price (`{entry}`) to make this trade 100% risk-free!",
+                                parse_mode="Markdown",
+                                reply_markup=keyboard
+                            )
 
                 # INVALIDATION STALL ALERT
                 current_z = float(df_live['z_score'].iloc[-1]) if 'z_score' in df_live.columns and pd.notna(df_live['z_score'].iloc[-1]) else 0.0
@@ -475,7 +503,8 @@ async def live_chart_guidance_loop(app):
                         await app.bot.send_message(
                             chat_id=target_user, 
                             text=f"⚠️ **Stall: {label}** | Close manually.", 
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            reply_markup=keyboard
                         )
                     active_trades.pop(label, None)
                     continue
@@ -529,8 +558,15 @@ async def signal_loop(app):
                         f"• Lot: `{rec_lot}`"
                     )
 
+                    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
+
                     target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-                    await app.bot.send_message(chat_id=target_user, text=signal_text, parse_mode="Markdown")
+                    await app.bot.send_message(
+                        chat_id=target_user, 
+                        text=signal_text, 
+                        parse_mode="Markdown",
+                        reply_markup=keyboard
+                    )
 
                     active_trades[label] = {
                         "type": sig,
@@ -565,6 +601,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CallbackQueryHandler(button_click_handler))
 
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
