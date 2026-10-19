@@ -1,6 +1,7 @@
+python-telegram-bot
 flask
+requests
 yfinance
 pandas
 ta
-python-telegram-bot
-httpx
+websockets
