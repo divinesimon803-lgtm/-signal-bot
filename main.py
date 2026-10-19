@@ -22,7 +22,7 @@ from telegram.ext import (
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 BOT_PASSCODE = os.getenv("BOT_PASSCODE")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID) # Channel ID or @channelusername
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID)
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
@@ -55,14 +55,16 @@ TIMEFRAME_H1 = "1h"
 
 last_signals = {}
 authorized_users = set()
-active_trades = {}  # Single active trade management per asset
 
-# --- PERSISTENT QUANTITATIVE PERFORMANCE TRACKER ---
+# --- PERSISTENT FILE STORAGE (HISTORY & ACTIVE TRADES) ---
 HISTORY_FILE = "history.json"
-trade_history = []  
+TRADES_FILE = "active_trades.json"
 
-def load_trade_history():
-    global trade_history
+trade_history = []  
+active_trades = {}  
+
+def load_data_from_disk():
+    global trade_history, active_trades
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r") as f:
@@ -71,6 +73,21 @@ def load_trade_history():
             logging.error(f"Error loading history: {e}")
             trade_history = []
 
+    if os.path.exists(TRADES_FILE):
+        try:
+            with open(TRADES_FILE, "r") as f:
+                active_trades = json.load(f)
+        except Exception as e:
+            logging.error(f"Error loading active trades: {e}")
+            active_trades = {}
+
+def save_active_trades():
+    try:
+        with open(TRADES_FILE, "w") as f:
+            json.dump(active_trades, f)
+    except Exception as e:
+        logging.error(f"Error saving active trades: {e}")
+
 def save_trade_history():
     try:
         with open(HISTORY_FILE, "w") as f:
@@ -78,7 +95,7 @@ def save_trade_history():
     except Exception as e:
         logging.error(f"Error saving history: {e}")
 
-load_trade_history()
+load_data_from_disk()
 
 def record_trade_outcome(outcome):
     global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent
@@ -141,7 +158,7 @@ def self_ping_loop():
         except Exception as e:
             logging.error(f"Self-ping error: {e}")
         import time
-        time.sleep(180)  # Pings every 3 minutes
+        time.sleep(180)  # Pings every 3 minutes to keep Render alive
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -368,9 +385,11 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         outcome = args[0].upper()
         record_trade_outcome(outcome)
         active_trades.clear()
+        save_active_trades()
         await update.message.reply_text(f"🧹 Recorded: **{outcome}**", parse_mode="Markdown")
     else:
         active_trades.clear()
+        save_active_trades()
         await update.message.reply_text("🧹 Trades Cleared.", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -433,7 +452,7 @@ async def live_chart_guidance_loop(app):
     global active_trades
     while True:
         try:
-            await asyncio.sleep(3)  # Fast 3-second check
+            await asyncio.sleep(15)  # Safe 15-second check to protect against rate limits
             if not active_trades:
                 continue
 
@@ -465,6 +484,7 @@ async def live_chart_guidance_loop(app):
                             reply_markup=keyboard
                         )
                     active_trades.pop(label, None)
+                    save_active_trades()
                     continue
 
                 # INSTANT SL HIT ALERT
@@ -479,6 +499,7 @@ async def live_chart_guidance_loop(app):
                             reply_markup=keyboard
                         )
                     active_trades.pop(label, None)
+                    save_active_trades()
                     continue
 
                 # BREAK-EVEN NOTIFICATION CHECK
@@ -487,6 +508,7 @@ async def live_chart_guidance_loop(app):
                     condition = (current_price >= halfway_target) if trade_type == "BUY" else (current_price <= halfway_target)
                     if condition:
                         trade["breakeven_alerted"] = True
+                        save_active_trades()
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user,
@@ -500,6 +522,7 @@ async def live_chart_guidance_loop(app):
                 if (trade_type == "BUY" and current_z > 1.0) or (trade_type == "SELL" and current_z < -1.0):
                     if target_user and authorized_users and not trade.get("invalidation_alerted", False):
                         trade["invalidation_alerted"] = True
+                        save_active_trades()
                         await app.bot.send_message(
                             chat_id=target_user, 
                             text=f"⚠️ **Stall: {label}** | Close manually.", 
@@ -507,11 +530,12 @@ async def live_chart_guidance_loop(app):
                             reply_markup=keyboard
                         )
                     active_trades.pop(label, None)
+                    save_active_trades()
                     continue
 
         except Exception as e:
             logging.error(f"Guidance error: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
 # --- SIGNAL SCANNER LOOP ---
 async def signal_loop(app):
@@ -573,10 +597,11 @@ async def signal_loop(app):
                         "entry": entry,
                         "sl": sl,
                         "tp": tp,
-                        "timestamp": datetime.datetime.now(datetime.timezone.utc),
+                        "timestamp": str(datetime.datetime.now(datetime.timezone.utc)),
                         "breakeven_alerted": False,
                         "invalidation_alerted": False
                     }
+                    save_active_trades()
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
             await asyncio.sleep(10)
