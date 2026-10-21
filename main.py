@@ -33,21 +33,21 @@ RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 current_account_balance = 10.00  # Default micro-account baseline
 
 # --- BOT TOGGLE CONTROL ---
-bot_active = True  # Controls signal generation & keep-alive ping state
+bot_active = True  
 
-# --- DAILY LOSS LIMIT & DIVINE QUANT MATRIX ---
+# --- DAILY LOSS LIMIT & CAPITAL PROTECTION MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
 daily_loss_limit_alert_sent = False
 
 # --- ASSET UNIVERSE (BTCUSD & XAUUSD) ---
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",    # Gold Futures (Proxied for XAUUSD)
-    "BTC-USD": "BTCUSD"  # Bitcoin active 24/7
+    "GC=F": "XAUUSD",    
+    "BTC-USD": "BTCUSD"  
 }
 
 WEEKEND_ASSETS = {
-    "BTC-USD": "BTCUSD"  # Bitcoin active 24/7
+    "BTC-USD": "BTCUSD"  
 }
 
 TIMEFRAME_M15 = "15m"
@@ -56,7 +56,7 @@ TIMEFRAME_H1 = "1h"
 last_signals = {}
 authorized_users = set()
 
-# --- PERSISTENT FILE STORAGE (HISTORY & ACTIVE TRADES) ---
+# --- PERSISTENT FILE STORAGE ---
 HISTORY_FILE = "history.json"
 TRADES_FILE = "active_trades.json"
 
@@ -126,14 +126,11 @@ def get_quantitative_performance_metrics():
 news_paused_state = False
 
 def is_high_impact_news_window():
-    """Pauses trading around high-impact macro data windows (e.g., US NFP/CPI spikes around 12:30-14:30 UTC)"""
     now_utc = datetime.datetime.now(datetime.timezone.utc)
-    # Example daily volatile macro window safety check (can be expanded)
     if now_utc.hour == 12 and 25 <= now_utc.minute <= 45:
         return True
     return False
 
-# --- PROFESSIONAL SESSION FILTER ---
 def is_active_trading_session(ticker):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
@@ -142,7 +139,7 @@ def is_active_trading_session(ticker):
         return True
 
     if ticker == "GC=F":
-        if weekday >= 5:  # Weekend closed for gold/forex markets
+        if weekday >= 5:  
             return False
         return True
 
@@ -150,7 +147,7 @@ def is_active_trading_session(ticker):
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- FLASK WEB SERVER & PERMANENT KEEP-ALIVE ---
+# --- FLASK WEB SERVER ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -169,27 +166,29 @@ def self_ping_loop():
         except Exception as e:
             logging.error(f"Self-ping error: {e}")
         import time
-        time.sleep(180)  # Pings every 3 minutes to keep Render alive permanently
+        time.sleep(180) 
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- DYNAMIC LOT SIZING ---
+# --- DYNAMIC LOT SIZING (MICRO-ACCOUNT DEFENSIVE SCALING) ---
 def calculate_dynamic_lot(ticker, sl_pips):
     global current_account_balance
     risk_amount = current_account_balance * RISK_PER_TRADE_PCT
-    pip_value = 1.0 if ticker == "BTC-USD" else 0.1  # Broker-friendly scaling for XAUUSD & BTCUSD
+    pip_value = 1.0 if ticker == "BTC-USD" else 0.1  
 
     if sl_pips <= 0:
         return 0.01
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
     
-    if current_account_balance <= 10.0:
+    # Strictly lock to 0.01 micro lots while balance is small ($10 baseline protection)
+    if current_account_balance <= 15.0:
         return 0.01  
     else:
-        return max(0.01, min(calculated_lot, 2.0))
+        # Loosens up safely as balance scales past $15 upwards towards your $100/$1000 goals
+        return max(0.01, min(calculated_lot, 5.0))
 
 # --- DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="5d"):
@@ -242,9 +241,8 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- ULTRA-STRICT WIN-HUNGRY STRATEGIES ---
+# --- CAPITAL-PROTECTED STRATEGIES ---
 def get_xauusd_strategy_signal(ticker):
-    """Ultra-strict, high-probability mean-reversion & momentum alignment for Gold (XAUUSD)"""
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
     if df_m15 is None or len(df_m15) < 50:
@@ -259,33 +257,31 @@ def get_xauusd_strategy_signal(ticker):
     z_score = float(c['z_score'])
 
     sig = None
-    # Strict filter setup for hunger on wins: higher z-score threshold combined with strict RSI confirmation
-    if z_score <= -1.5 and rsi < 38 and h1_bias != "BEARISH":
+    if z_score <= -1.8 and rsi < 35 and h1_bias != "BEARISH":
         sig = "BUY"
-    elif z_score >= 1.5 and rsi > 62 and h1_bias != "BULLISH":
+    elif z_score >= 1.8 and rsi > 65 and h1_bias != "BULLISH":
         sig = "SELL"
 
     if not sig:
         return None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 0.20  # Gold spread buffer
-    sl_distance = max(atr * 1.3, 2.50)  # Broker-safe tight SL for gold micro-lots
+    spread_buffer = 0.15  
+    sl_distance = max(atr * 1.1, 1.80)  
 
     if sig == "BUY":
         entry = round(live_price + spread_buffer, 2)
         sl = round(entry - sl_distance, 2)
-        tp = round(entry + (sl_distance * 1.8), 2)  # Optimized 1:1.8 RR for higher win probability
+        tp = round(entry + (sl_distance * 1.5), 2)  
     else:
         entry = round(live_price - spread_buffer, 2)
         sl = round(entry + sl_distance, 2)
-        tp = round(entry - (sl_distance * 1.8), 2)
+        tp = round(entry - (sl_distance * 1.5), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, rec_lot, rsi, f"XAUUSD (Z:{z_score:.2f})"
 
 def get_bitcoin_strategy_signal(ticker):
-    """Ultra-strict momentum breakout & Z-score reversal for BTCUSD"""
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None
@@ -299,9 +295,9 @@ def get_bitcoin_strategy_signal(ticker):
     z_score = float(c['z_score'])
 
     sig = None
-    if z_score <= -1.7 and rsi < 38:
+    if z_score <= -1.8 and rsi < 35:
         sig = "BUY"
-    elif z_score >= 1.7 and rsi > 62:
+    elif z_score >= 1.8 and rsi > 65:
         sig = "SELL"
 
     if not sig:
@@ -309,16 +305,16 @@ def get_bitcoin_strategy_signal(ticker):
 
     live_price = float(df_m15['Close'].iloc[-1])
     spread_buffer = 10.0
-    sl_distance = max(atr * 1.5, 35.0) 
+    sl_distance = max(atr * 1.3, 30.0) 
 
     if sig == "BUY":
         entry = round(live_price + spread_buffer, 2)
         sl = round(entry - sl_distance, 2)
-        tp = round(entry + (sl_distance * 1.8), 2)
+        tp = round(entry + (sl_distance * 1.5), 2)
     else:
         entry = round(live_price - spread_buffer, 2)
         sl = round(entry + sl_distance, 2)
-        tp = round(entry - (sl_distance * 1.8), 2)
+        tp = round(entry - (sl_distance * 1.5), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})"
@@ -330,7 +326,7 @@ def get_strategy_signal(ticker):
         return get_bitcoin_strategy_signal(ticker)
     return None, None, None, None, None, None, None
 
-# --- TELEGRAM BUTTON POSTING HANDLER (SIGNALS ONLY) ---
+# --- TELEGRAM BUTTON HANDLER ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -338,7 +334,6 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.data == "post_to_channel":
         original_text = query.message.text
         
-        # Strip out specific lot size for the public channel
         channel_text = original_text
         if "• Lot:" in channel_text:
             lines = channel_text.split("\n")
@@ -362,14 +357,14 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             logging.error(f"Channel post error: {e}")
             await query.message.reply_text(f"❌ Failed to post to channel: {e}", parse_mode="Markdown")
 
-# --- TELEGRAM COMMANDS ---
+# --- COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Bot Online & Locked 24/7**\nBalance: `${current_account_balance:.2f}`", 
+            f"🔓 **Bot Online & Capital-Protected**\nBalance: `${current_account_balance:.2f}`", 
             parse_mode="Markdown"
         )
     else:
@@ -424,7 +419,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Off" if not bot_active else ("Limit (3/3)" if daily_losses_count >= 3 else "Active")
+    state = "Off" if not bot_active else ("Daily Risk Limit Reached (2/2 Losses)" if daily_losses_count >= 2 else "Active")
     win_rate, wins, losses, pf = get_quantitative_performance_metrics()
     text = f"📊 **Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Balance: `${current_account_balance:.2f}`\n"
 
@@ -436,11 +431,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- 2-HOUR HEARTBEAT LOOP ---
+# --- 1-HOUR HEARTBEAT LOOP ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
-            await asyncio.sleep(7200) # 2 Hours
+            await asyncio.sleep(3600) # Updated to exactly 1 Hour (3600 seconds)
             if not bot_active:
                 continue
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -448,19 +443,18 @@ async def hourly_heartbeat_loop(app):
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                 await app.bot.send_message(
                     chat_id=target_user, 
-                    text=f"🟢 **Heartbeat** | Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)", 
+                    text=f"🟢 **Hourly Heartbeat** | Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L) | Balance: `${current_account_balance:.2f}`", 
                     parse_mode="Markdown"
                 )
         except Exception as e:
             logging.error(f"Heartbeat error: {e}")
             await asyncio.sleep(60)
 
-# --- INSTANT REAL-TIME GUIDANCE & MANAGEMENT LOOP (NO CHANNEL BUTTON) ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
         try:
-            await asyncio.sleep(15)  # Safe 15-second check loop
+            await asyncio.sleep(15)  
             if not active_trades:
                 continue
 
@@ -478,9 +472,6 @@ async def live_chart_guidance_loop(app):
                 sl = trade["sl"]
                 entry = trade["entry"]
 
-                # NOTE: Guidance alerts have NO inline button attached (private to user only)
-
-                # INSTANT TP HIT ALERT
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     record_trade_outcome("WIN")
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -494,7 +485,6 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
-                # INSTANT SL HIT ALERT
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     record_trade_outcome("LOSS")
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -508,9 +498,8 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
-                # BREAK-EVEN NOTIFICATION CHECK
                 if not trade.get("breakeven_alerted", False):
-                    halfway_target = entry + (tp - entry) * 0.5 if trade_type == "BUY" else entry - (entry - tp) * 0.5
+                    halfway_target = entry + (tp - entry) * 0.4 if trade_type == "BUY" else entry - (entry - tp) * 0.4
                     condition = (current_price >= halfway_target) if trade_type == "BUY" else (current_price <= halfway_target)
                     if condition:
                         trade["breakeven_alerted"] = True
@@ -518,19 +507,18 @@ async def live_chart_guidance_loop(app):
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user,
-                                text=f"🔒 **Guidance / Break-Even Alert: {label}**\nModify your SL to entry price (`{entry}`) to make this trade risk-free!",
+                                text=f"🔒 **Guidance / Quick Break-Even Alert: {label}**\nModify your SL to entry price (`{entry}`) immediately to secure 100% risk-free trade!",
                                 parse_mode="Markdown"
                             )
 
-                # INVALIDATION / MANUAL CLOSE STALL ALERT
                 current_z = float(df_live['z_score'].iloc[-1]) if 'z_score' in df_live.columns and pd.notna(df_live['z_score'].iloc[-1]) else 0.0
-                if (trade_type == "BUY" and current_z > 1.0) or (trade_type == "SELL" and current_z < -1.0):
+                if (trade_type == "BUY" and current_z > 0.8) or (trade_type == "SELL" and current_z < -0.8):
                     if target_user and authorized_users and not trade.get("invalidation_alerted", False):
                         trade["invalidation_alerted"] = True
                         save_active_trades()
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"⚠️ **Guidance Stall: {label}** | Consider closing trade manually.", 
+                            text=f"⚠️ **Guidance Stall: {label}** | Consider securing profit or closing trade manually.", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
@@ -541,7 +529,6 @@ async def live_chart_guidance_loop(app):
             logging.error(f"Guidance error: {e}")
             await asyncio.sleep(10)
 
-# --- SIGNAL SCANNER LOOP (WITH NEWS CIRCUIT BREAKER & CHANNEL BUTTON) ---
 async def signal_loop(app):
     global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent, news_paused_state
 
@@ -558,15 +545,28 @@ async def signal_loop(app):
                 await asyncio.sleep(10)
                 continue
 
-            # Economic News Circuit-Breaker Check
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+            
+            # Daily Loss Circuit Breaker (Cap at 2 losses max per day to protect the $10 balance)
+            if daily_losses_count >= 2:
+                if not daily_loss_limit_alert_sent:
+                    daily_loss_limit_alert_sent = True
+                    if target_user and authorized_users:
+                        await app.bot.send_message(
+                            chat_id=target_user,
+                            text="🛑 **Capital Protection Activated:** 2 losses reached today. Bot scanning paused for the rest of the day to protect your $10 account.",
+                            parse_mode="Markdown"
+                        )
+                await asyncio.sleep(60)
+                continue
+
             if is_high_impact_news_window():
                 if not news_paused_state:
                     news_paused_state = True
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="⏸️ **Bot Paused:** High-impact economic news window active. Scanning suspended for capital protection.",
+                            text="⏸️ **Bot Paused:** High-impact economic news window active.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(30)
@@ -577,13 +577,9 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="▶️ **Bot Resumed:** Economic news window cleared. Quantitative scanning is fully active again.",
+                            text="▶️ **Bot Resumed:** Economic news window cleared.",
                             parse_mode="Markdown"
                         )
-
-            if daily_losses_count >= 3:
-                await asyncio.sleep(60)
-                continue
 
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
@@ -609,7 +605,6 @@ async def signal_loop(app):
                         f"• Lot: `{rec_lot}`"
                     )
 
-                    # Button attached ONLY to signals for channel posting
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
 
                     if target_user and authorized_users:
@@ -662,7 +657,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Divine Quantitative Sniper Engine (XAUUSD & BTCUSD) Running 24/7...")
+    logging.info("Divine Quantitative Sniper Engine (Capital-Protected) Running 24/7...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
