@@ -183,11 +183,9 @@ def calculate_dynamic_lot(ticker, sl_pips):
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
     
-    # Strictly lock to 0.01 micro lots while balance is small ($10 baseline protection)
     if current_account_balance <= 15.0:
         return 0.01  
     else:
-        # Loosens up safely as balance scales past $15 upwards towards your $100/$1000 goals
         return max(0.01, min(calculated_lot, 5.0))
 
 # --- DATA FETCHER & INDICATORS ---
@@ -241,7 +239,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- CAPITAL-PROTECTED STRATEGIES ---
+# --- CAPITAL-PROTECTED STRATEGIES (LIVE PRICE ANCHORED) ---
 def get_xauusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
@@ -265,16 +263,16 @@ def get_xauusd_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None, None
 
+    # ANCHOR DIRECTLY TO THE CURRENT LIVE TICKER PRICE RIGHT NOW
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 0.15  
     sl_distance = max(atr * 1.1, 1.80)  
 
     if sig == "BUY":
-        entry = round(live_price + spread_buffer, 2)
+        entry = round(live_price, 2)
         sl = round(entry - sl_distance, 2)
         tp = round(entry + (sl_distance * 1.5), 2)  
     else:
-        entry = round(live_price - spread_buffer, 2)
+        entry = round(live_price, 2)
         sl = round(entry + sl_distance, 2)
         tp = round(entry - (sl_distance * 1.5), 2)
 
@@ -303,16 +301,16 @@ def get_bitcoin_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None, None
 
+    # ANCHOR DIRECTLY TO THE CURRENT LIVE TICKER PRICE RIGHT NOW
     live_price = float(df_m15['Close'].iloc[-1])
-    spread_buffer = 10.0
     sl_distance = max(atr * 1.3, 30.0) 
 
     if sig == "BUY":
-        entry = round(live_price + spread_buffer, 2)
+        entry = round(live_price, 2)
         sl = round(entry - sl_distance, 2)
         tp = round(entry + (sl_distance * 1.5), 2)
     else:
-        entry = round(live_price - spread_buffer, 2)
+        entry = round(live_price, 2)
         sl = round(entry + sl_distance, 2)
         tp = round(entry - (sl_distance * 1.5), 2)
 
@@ -435,7 +433,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hourly_heartbeat_loop(app):
     while True:
         try:
-            await asyncio.sleep(3600) # Updated to exactly 1 Hour (3600 seconds)
+            await asyncio.sleep(3600) 
             if not bot_active:
                 continue
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
@@ -547,7 +545,6 @@ async def signal_loop(app):
 
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             
-            # Daily Loss Circuit Breaker (Cap at 2 losses max per day to protect the $10 balance)
             if daily_losses_count >= 2:
                 if not daily_loss_limit_alert_sent:
                     daily_loss_limit_alert_sent = True
