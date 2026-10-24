@@ -358,10 +358,10 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode="Markdown"
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ **Posted Signal to Channel successfully!**", parse_mode="Markdown")
+            await query.message.reply_text("✅ **Published to Channel.**", parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Channel post error: {e}")
-            await query.message.reply_text(f"❌ Failed to post to channel: {e}", parse_mode="Markdown")
+            await query.message.reply_text(f"❌ Broadcast Failed: {e}", parse_mode="Markdown")
 
 # --- COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -370,7 +370,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine™️ Bot Online & Permanent Memory Active**\nBalance: `${current_account_balance:.2f}`", 
+            f"🔓 **Divine™️ // System Active**\nBalance: `${current_account_balance:.2f}`", 
             parse_mode="Markdown"
         )
     else:
@@ -381,14 +381,14 @@ async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     bot_active = False
-    await update.message.reply_text("🌙 **Divine™️ Bot OFF.** Engine is now asleep.", parse_mode="Markdown")
+    await update.message.reply_text("🌙 **Divine™️ // System Offline**", parse_mode="Markdown")
 
 async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if update.effective_user.id not in authorized_users:
         return
     bot_active = True
-    await update.message.reply_text("☀️ **Divine™️ Bot ON.** Engine scanning live markets 24/7.", parse_mode="Markdown")
+    await update.message.reply_text("☀️ **Divine™️ // System Online**", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades
@@ -402,11 +402,11 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         record_trade_outcome(outcome, profit_loss_amount=pnl)
         active_trades.clear()
         save_active_trades()
-        await update.message.reply_text(f"🧹 Recorded: **{outcome}** | Saved Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🧹 **Record Updated:** `{outcome}` | Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
     else:
         active_trades.clear()
         save_active_trades()
-        await update.message.reply_text("🧹 Active Trades Cleared.", parse_mode="Markdown")
+        await update.message.reply_text("🧹 **Active Trades Cleared.**", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -417,22 +417,22 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             current_account_balance = float(args[0])
             save_trade_history()
-            await update.message.reply_text(f"✅ Divine™️ Balance Updated & Saved: `${current_account_balance:.2f}`", parse_mode="Markdown")
+            await update.message.reply_text(f"💰 **Balance Saved:** `${current_account_balance:.2f}`", parse_mode="Markdown")
             return
         except ValueError:
             pass
-    await update.message.reply_text(f"💰 Saved Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 **Current Balance:** `${current_account_balance:.2f}`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Off" if not bot_active else ("Daily Risk Limit Reached (2/2 Losses)" if daily_losses_count >= 2 else "Active")
+    state = "Offline" if not bot_active else ("Limit Reached (2/2 Losses)" if daily_losses_count >= 2 else "Active")
     win_rate, wins, losses, pf = get_quantitative_performance_metrics()
     text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Balance: `${current_account_balance:.2f}`\n"
 
     if not active_trades:
-        text += "No active trade."
+        text += "No active position."
     else:
         for label, trade in active_trades.items():
             text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
@@ -451,7 +451,7 @@ async def hourly_heartbeat_loop(app):
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                 await app.bot.send_message(
                     chat_id=target_user, 
-                    text=f"🟢 **Divine™️ Heartbeat** | Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L) | Balance: `${current_account_balance:.2f}`", 
+                    text=f"🟢 **Divine™️ Heartbeat** | {win_rate:.1f}% ({wins}W/{losses}L) | `${current_account_balance:.2f}`", 
                     parse_mode="Markdown"
                 )
         except Exception as e:
@@ -487,7 +487,7 @@ async def live_chart_guidance_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🎯 **Divine™️ TP HIT: {label}** | Win Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`) | Balance: `${current_account_balance:.2f}`", 
+                            text=f"🎯 **Divine™️ // TP Secured: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Balance: `${current_account_balance:.2f}`", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
@@ -501,7 +501,7 @@ async def live_chart_guidance_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🛑 **Divine™️ SL HIT: {label}** | Win Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`) | Balance: `${current_account_balance:.2f}`", 
+                            text=f"🛑 **Divine™️ // SL Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Balance: `${current_account_balance:.2f}`", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
@@ -517,7 +517,7 @@ async def live_chart_guidance_loop(app):
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user,
-                                text=f"🔒 **Divine™️ Break-Even Alert: {label}**\nModify your SL to entry price (`{entry}`) immediately!",
+                                text=f"🔒 **Divine™️ // Risk Mitigation: {label}**\nMove SL to entry (`{entry}`) to secure risk-free position.",
                                 parse_mode="Markdown"
                             )
 
@@ -528,7 +528,7 @@ async def live_chart_guidance_loop(app):
                         save_active_trades()
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"⚠️ **Divine™️ Guidance Stall: {label}** | Consider securing profit.", 
+                            text=f"⚠️ **Divine™️ // Stall Alert: {label}**\nConsider manual exit.", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
@@ -563,7 +563,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="🛑 **Divine™️ Capital Protection:** 2 losses reached today. Bot scanning paused.",
+                            text="🛑 **Divine™️ // Circuit Breaker:** Daily loss limit reached. Pausing execution.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(60)
@@ -575,7 +575,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="⏸️ **Divine™️ Bot Paused:** High-impact economic news window active.",
+                            text="⏸️ **Divine™️ // Market Pause:** High-impact news window.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(30)
@@ -586,7 +586,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="▶️ **Divine™️ Bot Resumed:** News window cleared.",
+                            text="▶️ **Divine™️ // Resumed:** Normal execution restored.",
                             parse_mode="Markdown"
                         )
 
@@ -608,9 +608,10 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **Divine™️ SIGNAL: {label}** {dir_icon} `{sig}`\n"
+                        f"💎 **Divine™️ // {label} {dir_icon} {sig}**\n"
                         f"• Entry: `{entry}`\n"
-                        f"• SL: `{sl}` | TP: `{tp}`\n"
+                        f"• SL: `{sl}`\n"
+                        f"• TP: `{tp}`\n"
                         f"• Lot: `{rec_lot}`"
                     )
 
