@@ -254,11 +254,11 @@ def get_xauusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
     if df_m15 is None or len(df_m15) < 50:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
     rsi = float(c['rsi14'])
@@ -271,11 +271,11 @@ def get_xauusd_strategy_signal(ticker):
         sig = "SELL"
 
     if not sig:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
+    candle_time = pd.to_datetime(df_m15.index[-1])
     
-    # STRICT 1:2.5 RISK-TO-REWARD CALCULATION
     sl_distance = max(atr * 1.0, 1.50)  
     tp_distance = sl_distance * 2.5     
 
@@ -289,16 +289,16 @@ def get_xauusd_strategy_signal(ticker):
         tp = round(entry - tp_distance, 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"XAUUSD (Z:{z_score:.2f})"
+    return sig, entry, sl, tp, rec_lot, rsi, f"XAUUSD (Z:{z_score:.2f})", candle_time
 
 def get_bitcoin_strategy_signal(ticker):
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     c = df_m15.iloc[-2]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     atr = float(c['atr14'])
     rsi = float(c['rsi14'])
@@ -311,11 +311,11 @@ def get_bitcoin_strategy_signal(ticker):
         sig = "SELL"
 
     if not sig:
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
+    candle_time = pd.to_datetime(df_m15.index[-1])
     
-    # STRICT 1:2.5 RISK-TO-REWARD CALCULATION
     sl_distance = max(atr * 1.0, 25.0) 
     tp_distance = sl_distance * 2.5
 
@@ -329,14 +329,14 @@ def get_bitcoin_strategy_signal(ticker):
         tp = round(entry - tp_distance, 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})"
+    return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})", candle_time
 
 def get_strategy_signal(ticker):
     if ticker == "GC=F":
         return get_xauusd_strategy_signal(ticker)
     elif ticker == "BTC-USD":
         return get_bitcoin_strategy_signal(ticker)
-    return None, None, None, None, None, None, None
+    return None, None, None, None, None, None, None, None
 
 # --- TELEGRAM BUTTON HANDLER ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -605,7 +605,7 @@ async def signal_loop(app):
                 if not is_active_trading_session(ticker):
                     continue
 
-                sig, entry, sl, tp, rec_lot, rsi, strategy_name = get_strategy_signal(ticker)
+                sig, entry, sl, tp, rec_lot, rsi, strategy_name, candle_time = get_strategy_signal(ticker)
                 if sig is None:
                     continue
 
@@ -613,13 +613,34 @@ async def signal_loop(app):
                     last_signals[ticker] = sig
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
-                    signal_text = (
-                        f"💎 **Divine™️ // {label} {dir_icon} {sig}**\n"
-                        f"• Entry: `{entry}`\n"
-                        f"• SL: `{sl}`\n"
-                        f"• TP: `{tp}`\n"
-                        f"• Lot: `{rec_lot}`"
-                    )
+                    # --- MAXIMUM SLIPPAGE / EXPIRATION CHECK ---
+                    now_utc = pd.Timestamp.now(tz="UTC")
+                    # If candle time is older than 5 minutes, mark as EXPIRED
+                    is_expired = False
+                    if pd.notna(candle_time):
+                        if candle_time.tzinfo is None:
+                            candle_time = candle_time.tz_localize("UTC")
+                        else:
+                            candle_time = candle_time.tz_convert("UTC")
+                        
+                        time_diff_seconds = (now_utc - candle_time).total_seconds()
+                        if time_diff_seconds > 300:  # 5 minutes threshold
+                            is_expired = True
+
+                    if is_expired:
+                        signal_text = (
+                            f"⚠️ **Divine™️ // {label} {dir_icon} {sig} [EXPIRED]**\n"
+                            f"• Status: `Too late / Stale Signal`\n"
+                            f"• Entry: `{entry}`"
+                        )
+                    else:
+                        signal_text = (
+                            f"💎 **Divine™️ // {label} {dir_icon} {sig}**\n"
+                            f"• Entry: `{entry}`\n"
+                            f"• SL: `{sl}`\n"
+                            f"• TP: `{tp}`\n"
+                            f"• Lot: `{rec_lot}`"
+                        )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
 
@@ -631,16 +652,17 @@ async def signal_loop(app):
                             reply_markup=keyboard
                         )
 
-                    active_trades[label] = {
-                        "type": sig,
-                        "entry": entry,
-                        "sl": sl,
-                        "tp": tp,
-                        "timestamp": str(datetime.datetime.now(datetime.timezone.utc)),
-                        "breakeven_alerted": False,
-                        "invalidation_alerted": False
-                    }
-                    save_active_trades()
+                    if not is_expired:
+                        active_trades[label] = {
+                            "type": sig,
+                            "entry": entry,
+                            "sl": sl,
+                            "tp": tp,
+                            "timestamp": str(datetime.datetime.now(datetime.timezone.utc)),
+                            "breakeven_alerted": False,
+                            "invalidation_alerted": False
+                        }
+                        save_active_trades()
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
             await asyncio.sleep(10)
