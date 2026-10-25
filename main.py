@@ -29,18 +29,15 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
 
 RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
 
-# --- ACCOUNT BALANCE MANAGEMENT ---
-current_account_balance = 10.00  # Default baseline
-
-# --- BOT TOGGLE CONTROL ---
+# --- ACCOUNT BALANCE & STATE MANAGEMENT ---
+current_account_balance = 10.00  
 bot_active = True  
 
-# --- DAILY LOSS LIMIT & CAPITAL PROTECTION MATRIX ---
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
 daily_loss_limit_alert_sent = False
 
-# --- ASSET UNIVERSE (BTCUSD & XAUUSD) ---
+# --- ASSET UNIVERSE ---
 WEEKDAY_ASSETS = {
     "GC=F": "XAUUSD",    
     "BTC-USD": "BTCUSD"  
@@ -64,7 +61,7 @@ trade_history = []
 active_trades = {}  
 
 def load_data_from_disk():
-    global trade_history, active_trades, current_account_balance
+    global trade_history, active_trades, current_account_balance, daily_losses_count, today_date
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r") as f:
@@ -72,8 +69,14 @@ def load_data_from_disk():
                 if isinstance(data, dict):
                     trade_history = data.get("history", [])
                     current_account_balance = float(data.get("balance", 10.00))
-                elif isinstance(data, list):
-                    trade_history = data
+                    daily_losses_count = int(data.get("daily_losses", 0))
+                    saved_date = data.get("date")
+                    if saved_date:
+                        parsed_date = datetime.datetime.fromisoformat(saved_date).date()
+                        if parsed_date == datetime.datetime.now(datetime.timezone.utc).date():
+                            today_date = parsed_date
+                        else:
+                            daily_losses_count = 0
         except Exception as e:
             logging.error(f"Error loading history: {e}")
             trade_history = []
@@ -86,6 +89,19 @@ def load_data_from_disk():
             logging.error(f"Error loading active trades: {e}")
             active_trades = {}
 
+def save_trade_history():
+    try:
+        data = {
+            "history": trade_history,
+            "balance": current_account_balance,
+            "daily_losses": daily_losses_count,
+            "date": today_date.isoformat()
+        }
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logging.error(f"Error saving history: {e}")
+
 def save_active_trades():
     try:
         with open(TRADES_FILE, "w") as f:
@@ -93,21 +109,10 @@ def save_active_trades():
     except Exception as e:
         logging.error(f"Error saving active trades: {e}")
 
-def save_trade_history():
-    try:
-        data = {
-            "history": trade_history,
-            "balance": current_account_balance
-        }
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logging.error(f"Error saving history: {e}")
-
 load_data_from_disk()
 
-def record_trade_outcome(outcome, profit_loss_amount=0.0):
-    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent, current_account_balance
+def record_trade_outcome(outcome, profit_loss_amount=0.0, ticker_label=None):
+    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent, current_account_balance, last_signals
     now_date = datetime.datetime.now(datetime.timezone.utc).date()
     if now_date != today_date:
         today_date = now_date
@@ -116,10 +121,16 @@ def record_trade_outcome(outcome, profit_loss_amount=0.0):
 
     trade_history.append(outcome)
     current_account_balance = round(current_account_balance + profit_loss_amount, 2)
-    save_trade_history()  
-
+    
     if outcome == "LOSS":
         daily_losses_count += 1
+
+    save_trade_history()
+
+    if ticker_label:
+        for tkey, tlabel in {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}.items():
+            if tlabel == ticker_label:
+                last_signals.pop(tkey, None)
 
 def get_quantitative_performance_metrics():
     total_trades = len(trade_history)
@@ -144,15 +155,12 @@ def is_high_impact_news_window():
 def is_active_trading_session(ticker):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
-
     if ticker == "BTC-USD":
         return True
-
     if ticker == "GC=F":
         if weekday >= 5:  
             return False
         return True
-
     return True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -166,10 +174,7 @@ def health_check():
     return jsonify({"status": "ACTIVE" if bot_active else "PAUSED", "code": 200}), 200
 
 def self_ping_loop():
-    app_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not app_url:
-        app_url = "https://signal-bot-t8ud.onrender.com/health"
-    
+    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://signal-bot-t8ud.onrender.com/health")
     while True:
         try:
             requests.get(app_url, timeout=10)
@@ -192,7 +197,6 @@ def calculate_dynamic_lot(ticker, sl_pips):
         return 0.01
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    
     if current_account_balance <= 15.0:
         return 0.01  
     else:
@@ -249,7 +253,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- STRATEGIES (LOCKED 1:2.5 RISK-TO-REWARD RATIO) ---
+# --- STRATEGIES ---
 def get_xauusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
@@ -345,7 +349,6 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if query.data == "post_to_channel":
         original_text = query.message.text
-        
         channel_text = original_text
         if "• Lot:" in channel_text:
             lines = channel_text.split("\n")
@@ -397,7 +400,7 @@ async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("☀️ **Divine™️ // System Online**", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_trades
+    global active_trades, last_signals
     if update.effective_user.id not in authorized_users:
         return
     
@@ -408,11 +411,13 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         record_trade_outcome(outcome, profit_loss_amount=pnl)
         active_trades.clear()
         save_active_trades()
+        last_signals.clear()
         await update.message.reply_text(f"🧹 **Record Updated:** `{outcome}` | Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
     else:
         active_trades.clear()
         save_active_trades()
-        await update.message.reply_text("🧹 **Active Trades Cleared.**", parse_mode="Markdown")
+        last_signals.clear()
+        await update.message.reply_text("🧹 **Active Trades Cleared & Signals Reset.**", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -435,7 +440,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     state = "Offline" if not bot_active else ("Limit Reached (2/2 Losses)" if daily_losses_count >= 2 else "Active")
     win_rate, wins, losses, pf = get_quantitative_performance_metrics()
-    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Balance: `${current_account_balance:.2f}`\n"
+    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Daily Losses: `{daily_losses_count}/2`\n• Balance: `${current_account_balance:.2f}`\n"
 
     if not active_trades:
         text += "No active position."
@@ -488,7 +493,7 @@ async def live_chart_guidance_loop(app):
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     est_pnl = abs(tp - entry) * 0.01 if label == "BTCUSD" else abs(tp - entry) * 1.0
-                    record_trade_outcome("WIN", profit_loss_amount=est_pnl)
+                    record_trade_outcome("WIN", profit_loss_amount=est_pnl, ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                     if target_user and authorized_users:
                         await app.bot.send_message(
@@ -502,7 +507,7 @@ async def live_chart_guidance_loop(app):
 
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     est_loss = -abs(entry - sl) * 0.01 if label == "BTCUSD" else -abs(entry - sl) * 1.0
-                    record_trade_outcome("LOSS", profit_loss_amount=est_loss)
+                    record_trade_outcome("LOSS", profit_loss_amount=est_loss, ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                     if target_user and authorized_users:
                         await app.bot.send_message(
@@ -534,11 +539,14 @@ async def live_chart_guidance_loop(app):
                         save_active_trades()
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"⚠️ **Divine™️ // Stall Alert: {label}**\nConsider manual exit.", 
+                            text=f"⚠️ **Divine™️ // Stall Alert: {label}**\nZ-score reversed. Consider manual exit.", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
                     save_active_trades()
+                    for tkey, tlabel in {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}.items():
+                        if tlabel == label:
+                            last_signals.pop(tkey, None)
                     continue
 
         except Exception as e:
@@ -556,6 +564,7 @@ async def signal_loop(app):
                 daily_losses_count = 0
                 daily_loss_limit_alert_sent = False
                 last_signals.clear()
+                save_trade_history()
 
             if not bot_active:
                 await asyncio.sleep(10)
@@ -569,7 +578,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="🛑 **Divine™️ // Circuit Breaker:** Daily loss limit reached. Pausing execution.",
+                            text="🛑 **Divine™️ // Circuit Breaker:** Daily loss limit reached (2/2). Pausing execution.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(60)
@@ -613,7 +622,7 @@ async def signal_loop(app):
                     last_signals[ticker] = sig
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
-                    # --- MAXIMUM SLIPPAGE / EXPIRATION CHECK ---
+                    # --- REALISTIC M15 EXPIRATION CHECK (20 MINS THRESHOLD) ---
                     now_utc = pd.Timestamp.now(tz="UTC")
                     is_expired = False
                     if pd.notna(candle_time):
@@ -623,7 +632,7 @@ async def signal_loop(app):
                             candle_time = candle_time.tz_convert("UTC")
                         
                         time_diff_seconds = (now_utc - candle_time).total_seconds()
-                        if time_diff_seconds > 300:  # 5 minutes threshold
+                        if time_diff_seconds > 1200:  # 20 minutes threshold for M15
                             is_expired = True
 
                     if is_expired:
