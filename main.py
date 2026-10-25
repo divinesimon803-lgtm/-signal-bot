@@ -615,7 +615,6 @@ async def signal_loop(app):
 
                     # --- MAXIMUM SLIPPAGE / EXPIRATION CHECK ---
                     now_utc = pd.Timestamp.now(tz="UTC")
-                    # If candle time is older than 5 minutes, mark as EXPIRED
                     is_expired = False
                     if pd.notna(candle_time):
                         if candle_time.tzinfo is None:
