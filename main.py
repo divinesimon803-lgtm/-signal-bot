@@ -249,7 +249,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- STRATEGIES (LIVE PRICE ANCHORED) ---
+# --- STRATEGIES (LOCKED 1:2.5 RISK-TO-REWARD RATIO) ---
 def get_xauusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
@@ -274,16 +274,19 @@ def get_xauusd_strategy_signal(ticker):
         return None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    sl_distance = max(atr * 1.1, 1.80)  
+    
+    # STRICT 1:2.5 RISK-TO-REWARD CALCULATION
+    sl_distance = max(atr * 1.0, 1.50)  
+    tp_distance = sl_distance * 2.5     
 
     if sig == "BUY":
         entry = round(live_price, 2)
         sl = round(entry - sl_distance, 2)
-        tp = round(entry + (sl_distance * 1.5), 2)  
+        tp = round(entry + tp_distance, 2)  
     else:
         entry = round(live_price, 2)
         sl = round(entry + sl_distance, 2)
-        tp = round(entry - (sl_distance * 1.5), 2)
+        tp = round(entry - tp_distance, 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, rec_lot, rsi, f"XAUUSD (Z:{z_score:.2f})"
@@ -311,16 +314,19 @@ def get_bitcoin_strategy_signal(ticker):
         return None, None, None, None, None, None, None
 
     live_price = float(df_m15['Close'].iloc[-1])
-    sl_distance = max(atr * 1.3, 30.0) 
+    
+    # STRICT 1:2.5 RISK-TO-REWARD CALCULATION
+    sl_distance = max(atr * 1.0, 25.0) 
+    tp_distance = sl_distance * 2.5
 
     if sig == "BUY":
         entry = round(live_price, 2)
         sl = round(entry - sl_distance, 2)
-        tp = round(entry + (sl_distance * 1.5), 2)
+        tp = round(entry + tp_distance, 2)
     else:
         entry = round(live_price, 2)
         sl = round(entry + sl_distance, 2)
-        tp = round(entry - (sl_distance * 1.5), 2)
+        tp = round(entry - tp_distance, 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})"
