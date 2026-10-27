@@ -27,7 +27,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID)
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
-RISK_PER_TRADE_PCT = 0.015  # 1.5% strict risk profile
+RISK_PER_TRADE_PCT = 0.01  # Conservative 1.0% strict risk profile for micro-accounts
 
 # --- ACCOUNT BALANCE & STATE MANAGEMENT ---
 current_account_balance = 10.00  
@@ -36,7 +36,7 @@ bot_active = True
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
 daily_loss_limit_alert_sent = False
-MAX_DAILY_LOSSES = 3  # Increased from 2 to 3
+MAX_DAILY_LOSSES = 3  
 
 # --- ASSET UNIVERSE (EURUSD & BTCUSD) ---
 WEEKDAY_ASSETS = {
@@ -188,16 +188,15 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- DYNAMIC LOT SIZING (MICRO RISK CONTROL) ---
+# --- DYNAMIC LOT SIZING (ULTRA-SAFE MICRO RISK) ---
 def calculate_dynamic_lot(ticker, sl_pips):
     global current_account_balance
-    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.40)
+    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.25) # Max risk strictly capped at $0.25 per trade
     
-    # Pip value adjustments for EURUSD vs BTC
     if ticker == "BTC-USD":
         pip_value = 1.0
     else:
-        pip_value = 0.1  # Standard forex micro-lot pip value approximation
+        pip_value = 0.1  
 
     if sl_pips <= 0:
         return 0.01
@@ -256,7 +255,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- PRO STRATEGIES WITH SUPPORT & RESISTANCE (SWING HIGHS/LOWS) ---
+# --- PRO STRATEGIES WITH SYNCHRONIZED EXECUTION & NOISE BUFFERS ---
 
 def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
@@ -264,7 +263,8 @@ def get_eurusd_strategy_signal(ticker):
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None
 
-    c = df_m15.iloc[-2]
+    # Use index [-1] consistently to avoid look-ahead bias and price drifting mismatch
+    c = df_m15.iloc[-1]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
@@ -272,7 +272,6 @@ def get_eurusd_strategy_signal(ticker):
     z_score = float(c['z_score'])
 
     sig = None
-    # Strict Z-Score + RSI + H1 Trend alignment for EURUSD
     if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH":
         sig = "BUY"
     elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH":
@@ -281,30 +280,28 @@ def get_eurusd_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None, None, None
 
-    live_price = float(df_m15['Close'].iloc[-1])
+    live_price = float(c['Close'])
     candle_time = pd.to_datetime(df_m15.index[-1])
     
-    # Pro Support & Resistance calculation: Swing High / Low of last 10 candles
-    recent_high = float(df_m15['High'].iloc[-11:-1].max())
-    recent_low = float(df_m15['Low'].iloc[-11:-1].min())
+    recent_high = float(df_m15['High'].iloc[-12:-2].max())
+    recent_low = float(df_m15['Low'].iloc[-12:-2].min())
     atr = float(c['atr14'])
 
     if sig == "BUY":
         entry = round(live_price, 4)
-        # Place SL just below structural support (recent low) with a small buffer
-        sl = round(min(entry - (atr * 0.8), recent_low - 0.0005), 4)
+        # Wider buffer (1.2 * ATR) to prevent noise hunting
+        sl = round(min(entry - (atr * 1.2), recent_low - 0.0010), 4)
         sl_distance = round(entry - sl, 4)
-        if sl_distance <= 0.0005:
-            sl_distance = 0.0015
+        if sl_distance <= 0.0010:
+            sl_distance = 0.0020
             sl = round(entry - sl_distance, 4)
         tp = round(entry + (sl_distance * 2.5), 4)
     else:
         entry = round(live_price, 4)
-        # Place SL just above structural resistance (recent high) with a small buffer
-        sl = round(max(entry + (atr * 0.8), recent_high + 0.0005), 4)
+        sl = round(max(entry + (atr * 1.2), recent_high + 0.0010), 4)
         sl_distance = round(sl - entry, 4)
-        if sl_distance <= 0.0005:
-            sl_distance = 0.0015
+        if sl_distance <= 0.0010:
+            sl_distance = 0.0020
             sl = round(entry + sl_distance, 4)
         tp = round(entry - (sl_distance * 2.5), 4)
 
@@ -317,7 +314,7 @@ def get_bitcoin_strategy_signal(ticker):
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None
 
-    c = df_m15.iloc[-2]
+    c = df_m15.iloc[-1]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
@@ -333,28 +330,27 @@ def get_bitcoin_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None, None, None
 
-    live_price = float(df_m15['Close'].iloc[-1])
+    live_price = float(c['Close'])
     candle_time = pd.to_datetime(df_m15.index[-1])
     
-    # Pro Support & Resistance calculation for BTC
-    recent_high = float(df_m15['High'].iloc[-11:-1].max())
-    recent_low = float(df_m15['Low'].iloc[-11:-1].min())
+    recent_high = float(df_m15['High'].iloc[-12:-2].max())
+    recent_low = float(df_m15['Low'].iloc[-12:-2].min())
     atr = float(c['atr14'])
 
     if sig == "BUY":
         entry = round(live_price, 2)
-        sl = round(min(entry - (atr * 0.8), recent_low - 20.0), 2)
+        sl = round(min(entry - (atr * 1.2), recent_low - 40.0), 2)
         sl_distance = round(entry - sl, 2)
-        if sl_distance <= 10.0:
-            sl_distance = 50.0
+        if sl_distance <= 20.0:
+            sl_distance = 80.0
             sl = round(entry - sl_distance, 2)
         tp = round(entry + (sl_distance * 2.5), 2)
     else:
         entry = round(live_price, 2)
-        sl = round(max(entry + (atr * 0.8), recent_high + 20.0), 2)
+        sl = round(max(entry + (atr * 1.2), recent_high + 40.0), 2)
         sl_distance = round(sl - entry, 2)
-        if sl_distance <= 10.0:
-            sl_distance = 50.0
+        if sl_distance <= 20.0:
+            sl_distance = 80.0
             sl = round(entry + sl_distance, 2)
         tp = round(entry - (sl_distance * 2.5), 2)
 
@@ -664,7 +660,7 @@ async def signal_loop(app):
                             candle_time = candle_time.tz_convert("UTC")
                         
                         time_diff_seconds = (now_utc - candle_time).total_seconds()
-                        if time_diff_seconds > 1200:  # 20 minutes threshold for M15
+                        if time_diff_seconds > 1200:  
                             is_expired = True
 
                     if is_expired:
