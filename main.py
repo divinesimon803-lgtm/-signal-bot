@@ -36,10 +36,11 @@ bot_active = True
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 daily_losses_count = 0
 daily_loss_limit_alert_sent = False
+MAX_DAILY_LOSSES = 3  # Increased from 2 to 3
 
-# --- ASSET UNIVERSE ---
+# --- ASSET UNIVERSE (EURUSD & BTCUSD) ---
 WEEKDAY_ASSETS = {
-    "GC=F": "XAUUSD",    
+    "EURUSD=X": "EURUSD",    
     "BTC-USD": "BTCUSD"  
 }
 
@@ -157,7 +158,7 @@ def is_active_trading_session(ticker):
     weekday = now_utc.weekday()
     if ticker == "BTC-USD":
         return True
-    if ticker == "GC=F":
+    if ticker == "EURUSD=X":
         if weekday >= 5:  
             return False
         return True
@@ -190,14 +191,19 @@ def run_flask():
 # --- DYNAMIC LOT SIZING (MICRO RISK CONTROL) ---
 def calculate_dynamic_lot(ticker, sl_pips):
     global current_account_balance
-    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.50)
-    pip_value = 1.0 if ticker == "BTC-USD" else 0.1  
+    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.40)
+    
+    # Pip value adjustments for EURUSD vs BTC
+    if ticker == "BTC-USD":
+        pip_value = 1.0
+    else:
+        pip_value = 0.1  # Standard forex micro-lot pip value approximation
 
     if sl_pips <= 0:
         return 0.01
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    return max(0.01, min(calculated_lot, 0.03))
+    return max(0.01, min(calculated_lot, 0.02))
 
 # --- DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="5d"):
@@ -250,8 +256,9 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- STRATEGIES ---
-def get_xauusd_strategy_signal(ticker):
+# --- PRO STRATEGIES WITH SUPPORT & RESISTANCE (SWING HIGHS/LOWS) ---
+
+def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
     if df_m15 is None or len(df_m15) < 50:
@@ -261,14 +268,14 @@ def get_xauusd_strategy_signal(ticker):
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
-    atr = float(c['atr14'])
     rsi = float(c['rsi14'])
     z_score = float(c['z_score'])
 
     sig = None
-    if z_score <= -1.8 and rsi < 35 and h1_bias != "BEARISH":
+    # Strict Z-Score + RSI + H1 Trend alignment for EURUSD
+    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH":
         sig = "BUY"
-    elif z_score >= 1.8 and rsi > 65 and h1_bias != "BULLISH":
+    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH":
         sig = "SELL"
 
     if not sig:
@@ -277,23 +284,35 @@ def get_xauusd_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     candle_time = pd.to_datetime(df_m15.index[-1])
     
-    # ROBUST TECHNICAL SL: Gives Gold room to breathe (at least 3.0 points away) to avoid noise hunting, with 1:3 reward ratio
-    sl_distance = max(atr * 1.0, 3.00)  
-    tp_distance = sl_distance * 3.0     
+    # Pro Support & Resistance calculation: Swing High / Low of last 10 candles
+    recent_high = float(df_m15['High'].iloc[-11:-1].max())
+    recent_low = float(df_m15['Low'].iloc[-11:-1].min())
+    atr = float(c['atr14'])
 
     if sig == "BUY":
-        entry = round(live_price, 2)
-        sl = round(entry - sl_distance, 2)
-        tp = round(entry + tp_distance, 2)  
+        entry = round(live_price, 4)
+        # Place SL just below structural support (recent low) with a small buffer
+        sl = round(min(entry - (atr * 0.8), recent_low - 0.0005), 4)
+        sl_distance = round(entry - sl, 4)
+        if sl_distance <= 0.0005:
+            sl_distance = 0.0015
+            sl = round(entry - sl_distance, 4)
+        tp = round(entry + (sl_distance * 2.5), 4)
     else:
-        entry = round(live_price, 2)
-        sl = round(entry + sl_distance, 2)
-        tp = round(entry - tp_distance, 2)
+        entry = round(live_price, 4)
+        # Place SL just above structural resistance (recent high) with a small buffer
+        sl = round(max(entry + (atr * 0.8), recent_high + 0.0005), 4)
+        sl_distance = round(sl - entry, 4)
+        if sl_distance <= 0.0005:
+            sl_distance = 0.0015
+            sl = round(entry + sl_distance, 4)
+        tp = round(entry - (sl_distance * 2.5), 4)
 
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"XAUUSD (Z:{z_score:.2f})", candle_time
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance * 10000)
+    return sig, entry, sl, tp, rec_lot, rsi, f"EURUSD (Z:{z_score:.2f})", candle_time
 
 def get_bitcoin_strategy_signal(ticker):
+    h1_bias = get_h1_trend_bias(ticker)
     df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None
@@ -302,14 +321,13 @@ def get_bitcoin_strategy_signal(ticker):
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
-    atr = float(c['atr14'])
     rsi = float(c['rsi14'])
     z_score = float(c['z_score'])
 
     sig = None
-    if z_score <= -1.8 and rsi < 35:
+    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH":
         sig = "BUY"
-    elif z_score >= 1.8 and rsi > 65:
+    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH":
         sig = "SELL"
 
     if not sig:
@@ -318,24 +336,34 @@ def get_bitcoin_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     candle_time = pd.to_datetime(df_m15.index[-1])
     
-    sl_distance = max(atr * 1.0, 50.0) 
-    tp_distance = sl_distance * 3.0
+    # Pro Support & Resistance calculation for BTC
+    recent_high = float(df_m15['High'].iloc[-11:-1].max())
+    recent_low = float(df_m15['Low'].iloc[-11:-1].min())
+    atr = float(c['atr14'])
 
     if sig == "BUY":
         entry = round(live_price, 2)
-        sl = round(entry - sl_distance, 2)
-        tp = round(entry + tp_distance, 2)
+        sl = round(min(entry - (atr * 0.8), recent_low - 20.0), 2)
+        sl_distance = round(entry - sl, 2)
+        if sl_distance <= 10.0:
+            sl_distance = 50.0
+            sl = round(entry - sl_distance, 2)
+        tp = round(entry + (sl_distance * 2.5), 2)
     else:
         entry = round(live_price, 2)
-        sl = round(entry + sl_distance, 2)
-        tp = round(entry - tp_distance, 2)
+        sl = round(max(entry + (atr * 0.8), recent_high + 20.0), 2)
+        sl_distance = round(sl - entry, 2)
+        if sl_distance <= 10.0:
+            sl_distance = 50.0
+            sl = round(entry + sl_distance, 2)
+        tp = round(entry - (sl_distance * 2.5), 2)
 
     rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})", candle_time
 
 def get_strategy_signal(ticker):
-    if ticker == "GC=F":
-        return get_xauusd_strategy_signal(ticker)
+    if ticker == "EURUSD=X":
+        return get_eurusd_strategy_signal(ticker)
     elif ticker == "BTC-USD":
         return get_bitcoin_strategy_signal(ticker)
     return None, None, None, None, None, None, None, None
@@ -436,9 +464,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Offline" if not bot_active else ("Limit Reached (2/2 Losses)" if daily_losses_count >= 2 else "Active")
+    state = "Offline" if not bot_active else (f"Limit Reached ({daily_losses_count}/{MAX_DAILY_LOSSES} Losses)" if daily_losses_count >= MAX_DAILY_LOSSES else "Active")
     win_rate, wins, losses, pf = get_quantitative_performance_metrics()
-    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Daily Losses: `{daily_losses_count}/2`\n• Balance: `${current_account_balance:.2f}`\n"
+    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Daily Losses: `{daily_losses_count}/{MAX_DAILY_LOSSES}`\n• Balance: `${current_account_balance:.2f}`\n"
 
     if not active_trades:
         text += "No active position."
@@ -478,7 +506,7 @@ async def live_chart_guidance_loop(app):
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
 
             for label, trade in list(active_trades.items()):
-                y_ticker = "GC=F" if label == "XAUUSD" else "BTC-USD"
+                y_ticker = "EURUSD=X" if label == "EURUSD" else "BTC-USD"
                 df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="2d")
                 if df_live is None or len(df_live) < 10:
                     continue
@@ -490,7 +518,7 @@ async def live_chart_guidance_loop(app):
                 entry = trade["entry"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    est_pnl = abs(tp - entry) * 0.01 if label == "BTCUSD" else abs(tp - entry) * 1.0
+                    est_pnl = abs(tp - entry) * 1.0 if label == "EURUSD" else abs(tp - entry) * 0.01
                     record_trade_outcome("WIN", profit_loss_amount=est_pnl, ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                     if target_user and authorized_users:
@@ -504,7 +532,7 @@ async def live_chart_guidance_loop(app):
                     continue
 
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    est_loss = -abs(entry - sl) * 0.01 if label == "BTCUSD" else -abs(entry - sl) * 1.0
+                    est_loss = -abs(entry - sl) * 1.0 if label == "EURUSD" else -abs(entry - sl) * 0.01
                     record_trade_outcome("LOSS", profit_loss_amount=est_loss, ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                     if target_user and authorized_users:
@@ -537,7 +565,7 @@ async def live_chart_guidance_loop(app):
                         save_active_trades()
                         
                         pnl_diff = (current_price - entry) if trade_type == "BUY" else (entry - current_price)
-                        est_pnl = max(0.1, pnl_diff) * 0.01 if label == "BTCUSD" else max(0.1, pnl_diff) * 1.0
+                        est_pnl = max(0.05, pnl_diff) * 1.0 if label == "EURUSD" else max(0.5, pnl_diff) * 0.01
                         record_trade_outcome("WIN", profit_loss_amount=est_pnl, ticker_label=label)
                         win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                         
@@ -576,13 +604,13 @@ async def signal_loop(app):
 
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             
-            if daily_losses_count >= 2:
+            if daily_losses_count >= MAX_DAILY_LOSSES:
                 if not daily_loss_limit_alert_sent:
                     daily_loss_limit_alert_sent = True
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text="🛑 **Divine™️ // Circuit Breaker:** Daily loss limit reached (2/2). Pausing execution.",
+                            text=f"🛑 **Divine™️ // Circuit Breaker:** Daily loss limit reached ({MAX_DAILY_LOSSES}/{MAX_DAILY_LOSSES}). Pausing execution.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(60)
