@@ -187,10 +187,9 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- DYNAMIC LOT SIZING (ULTRA-STRICT MICRO RISK) ---
+# --- DYNAMIC LOT SIZING (MICRO RISK CONTROL) ---
 def calculate_dynamic_lot(ticker, sl_pips):
     global current_account_balance
-    # Strictly limit risk to 1.5% of the real account balance, capped safely
     risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.50)
     pip_value = 1.0 if ticker == "BTC-USD" else 0.1  
 
@@ -198,7 +197,7 @@ def calculate_dynamic_lot(ticker, sl_pips):
         return 0.01
 
     calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    return max(0.01, min(calculated_lot, 0.03))  # Hard cap lot size to protect micro accounts
+    return max(0.01, min(calculated_lot, 0.03))
 
 # --- DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="5d"):
@@ -278,9 +277,9 @@ def get_xauusd_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     candle_time = pd.to_datetime(df_m15.index[-1])
     
-    # ULTRA-STRICT RISK CONTROL: Tightly cap SL distance, allow massive open-ended TP (1:3+ asymmetric ratio)
-    sl_distance = min(max(atr * 0.4, 0.80), 1.50)  
-    tp_distance = sl_distance * 3.0                
+    # ROBUST TECHNICAL SL: Gives Gold room to breathe (at least 3.0 points away) to avoid noise hunting, with 1:3 reward ratio
+    sl_distance = max(atr * 1.0, 3.00)  
+    tp_distance = sl_distance * 3.0     
 
     if sig == "BUY":
         entry = round(live_price, 2)
@@ -319,7 +318,7 @@ def get_bitcoin_strategy_signal(ticker):
     live_price = float(df_m15['Close'].iloc[-1])
     candle_time = pd.to_datetime(df_m15.index[-1])
     
-    sl_distance = min(max(atr * 0.5, 10.0), 30.0) 
+    sl_distance = max(atr * 1.0, 50.0) 
     tp_distance = sl_distance * 3.0
 
     if sig == "BUY":
