@@ -144,7 +144,7 @@ def get_quantitative_performance_metrics():
     profit_factor = (wins / losses) if losses > 0 else float(wins)
     return win_rate, wins, losses, profit_factor
 
-# --- ECONOMIC NEWS CIRCUIT BREAKER ---
+# --- INSTITUTIONAL SESSION FILTER (PRO TRADER LOGIC) ---
 news_paused_state = False
 
 def is_high_impact_news_window():
@@ -153,16 +153,20 @@ def is_high_impact_news_window():
         return True
     return False
 
-def is_active_trading_session(ticker):
+def is_prime_trading_session(ticker):
+    """Pro filter: Only trade during high-liquidity London & New York session hours (7 AM - 9 PM UTC)."""
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
-    if ticker == "BTC-USD":
+    
+    # Forex closed on weekends
+    if ticker == "EURUSD=X" and weekday >= 5:
+        return False
+        
+    # Restrict trading hours strictly between 07:00 UTC and 21:00 UTC to avoid choppy opens/closes
+    if 7 <= now_utc.hour < 21:
         return True
-    if ticker == "EURUSD=X":
-        if weekday >= 5:  
-            return False
-        return True
-    return True
+        
+    return False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -191,7 +195,7 @@ def run_flask():
 # --- DYNAMIC LOT SIZING (ULTRA-SAFE MICRO RISK) ---
 def calculate_dynamic_lot(ticker, sl_pips):
     global current_account_balance
-    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.25) # Max risk strictly capped at $0.25 per trade
+    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.25) 
     
     if ticker == "BTC-USD":
         pip_value = 1.0
@@ -255,7 +259,7 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- PRO STRATEGIES WITH SYNCHRONIZED EXECUTION & NOISE BUFFERS ---
+# --- PRO STRATEGIES WITH SESSION & MOMENTUM FILTERS ---
 
 def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
@@ -263,18 +267,20 @@ def get_eurusd_strategy_signal(ticker):
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None
 
-    # Use index [-1] consistently to avoid look-ahead bias and price drifting mismatch
     c = df_m15.iloc[-1]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
     rsi = float(c['rsi14'])
     z_score = float(c['z_score'])
+    open_p = float(c['Open'])
+    close_p = float(c['Close'])
 
     sig = None
-    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH":
+    # Strict Z-Score + RSI + Trend + Candle Body Confirmation (Pro filter)
+    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH" and close_p > open_p:
         sig = "BUY"
-    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH":
+    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH" and close_p < open_p:
         sig = "SELL"
 
     if not sig:
@@ -289,7 +295,6 @@ def get_eurusd_strategy_signal(ticker):
 
     if sig == "BUY":
         entry = round(live_price, 4)
-        # Wider buffer (1.2 * ATR) to prevent noise hunting
         sl = round(min(entry - (atr * 1.2), recent_low - 0.0010), 4)
         sl_distance = round(entry - sl, 4)
         if sl_distance <= 0.0010:
@@ -320,11 +325,13 @@ def get_bitcoin_strategy_signal(ticker):
 
     rsi = float(c['rsi14'])
     z_score = float(c['z_score'])
+    open_p = float(c['Open'])
+    close_p = float(c['Close'])
 
     sig = None
-    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH":
+    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH" and close_p > open_p:
         sig = "BUY"
-    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH":
+    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH" and close_p < open_p:
         sig = "SELL"
 
     if not sig:
@@ -639,7 +646,8 @@ async def signal_loop(app):
                 if label in active_trades:
                     continue  
 
-                if not is_active_trading_session(ticker):
+                # Enforce Institutional Session Filter
+                if not is_prime_trading_session(ticker):
                     continue
 
                 sig, entry, sl, tp, rec_lot, rsi, strategy_name, candle_time = get_strategy_signal(ticker)
