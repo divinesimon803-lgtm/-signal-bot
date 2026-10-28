@@ -27,7 +27,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID)
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
-RISK_PER_TRADE_PCT = 0.01  # Conservative 1.0% strict risk profile for micro-accounts
+RISK_PER_TRADE_PCT = 0.01  # Strict 1% risk profile
 
 # --- ACCOUNT BALANCE & STATE MANAGEMENT ---
 current_account_balance = 10.00  
@@ -38,7 +38,7 @@ daily_losses_count = 0
 daily_loss_limit_alert_sent = False
 MAX_DAILY_LOSSES = 3  
 
-# --- ASSET UNIVERSE (EURUSD & BTCUSD) ---
+# --- ASSET UNIVERSE ---
 WEEKDAY_ASSETS = {
     "EURUSD=X": "EURUSD",    
     "BTC-USD": "BTCUSD"  
@@ -51,7 +51,7 @@ WEEKEND_ASSETS = {
 TIMEFRAME_M15 = "15m"
 TIMEFRAME_H1 = "1h"
 
-last_signals = {}
+last_signal_timestamps = {}
 authorized_users = set()
 
 # --- PERSISTENT FILE STORAGE ---
@@ -112,8 +112,8 @@ def save_active_trades():
 
 load_data_from_disk()
 
-def record_trade_outcome(outcome, profit_loss_amount=0.0, ticker_label=None):
-    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent, current_account_balance, last_signals
+def record_trade_outcome(outcome, ticker_label=None):
+    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent
     now_date = datetime.datetime.now(datetime.timezone.utc).date()
     if now_date != today_date:
         today_date = now_date
@@ -121,17 +121,10 @@ def record_trade_outcome(outcome, profit_loss_amount=0.0, ticker_label=None):
         daily_loss_limit_alert_sent = False
 
     trade_history.append(outcome)
-    current_account_balance = round(current_account_balance + profit_loss_amount, 2)
-    
     if outcome == "LOSS":
         daily_losses_count += 1
 
     save_trade_history()
-
-    if ticker_label:
-        for tkey, tlabel in {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}.items():
-            if tlabel == ticker_label:
-                last_signals.pop(tkey, None)
 
 def get_quantitative_performance_metrics():
     total_trades = len(trade_history)
@@ -144,25 +137,17 @@ def get_quantitative_performance_metrics():
     profit_factor = (wins / losses) if losses > 0 else float(wins)
     return win_rate, wins, losses, profit_factor
 
-# --- INSTITUTIONAL SESSION FILTER (PRO TRADER LOGIC) ---
+# --- INSTITUTIONAL SESSION FILTER ---
 news_paused_state = False
 
-def is_high_impact_news_window():
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    if now_utc.hour == 12 and 25 <= now_utc.minute <= 45:
-        return True
-    return False
-
 def is_prime_trading_session(ticker):
-    """Pro filter: Only trade during high-liquidity London & New York session hours (7 AM - 9 PM UTC)."""
+    """Only trade during active London & New York session hours (07:00 to 21:00 UTC)."""
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     
-    # Forex closed on weekends
     if ticker == "EURUSD=X" and weekday >= 5:
         return False
         
-    # Restrict trading hours strictly between 07:00 UTC and 21:00 UTC to avoid choppy opens/closes
     if 7 <= now_utc.hour < 21:
         return True
         
@@ -192,21 +177,35 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- DYNAMIC LOT SIZING (ULTRA-SAFE MICRO RISK) ---
-def calculate_dynamic_lot(ticker, sl_pips):
+# --- MATHEMATICALLY TRUE RISK-BASED LOT CALCULATION ---
+def calculate_dynamic_lot(ticker, sl_distance):
+    """
+    Calculates exact lot size based on account balance, target risk % (1%),
+    and stop loss distance, ensuring safety on micro-accounts.
+    """
     global current_account_balance
-    risk_amount = min(current_account_balance * RISK_PER_TRADE_PCT, 0.25) 
+    risk_dollar_amount = current_account_balance * RISK_PER_TRADE_PCT
     
-    if ticker == "BTC-USD":
-        pip_value = 1.0
-    else:
-        pip_value = 0.1  
-
-    if sl_pips <= 0:
+    if sl_distance <= 0:
         return 0.01
 
-    calculated_lot = round(risk_amount / (sl_pips * pip_value), 2)
-    return max(0.01, min(calculated_lot, 0.02))
+    if ticker == "BTC-USD":
+        # For crypto/BTC, 1 unit move = $1 per lot scale roughly
+        pip_value = 1.0
+        risk_per_lot = sl_distance * pip_value
+    else:
+        # For Forex (EURUSD standard micro-lot pip value is ~$0.10 per pips for 0.01 lot)
+        pip_value = 0.1 
+        sl_pips = sl_distance * 10000
+        risk_per_lot = sl_pips * pip_value
+
+    if risk_per_lot <= 0:
+        return 0.01
+
+    calculated_lot = risk_dollar_amount / risk_per_lot
+    # Enforce standard broker boundaries: minimum 0.01, capped safely
+    final_lot = round(calculated_lot, 2)
+    return max(0.01, min(final_lot, 0.05))
 
 # --- DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="5d"):
@@ -245,13 +244,14 @@ def fetch_data(ticker, interval, period="5d"):
         return None
 
 def get_h1_trend_bias(ticker):
-    df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="7d")
-    if df_h1 is None or len(df_h1) < 50:
+    df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="30d")
+    if df_h1 is None or len(df_h1) < 200:
         return "NEUTRAL"
     
-    latest_close = float(df_h1['Close'].iloc[-1])
-    latest_ema50 = float(df_h1['ema50'].iloc[-1]) if pd.notna(df_h1['ema50'].iloc[-1]) else latest_close
-    latest_ema200 = float(df_h1['ema200'].iloc[-1]) if pd.notna(df_h1['ema200'].iloc[-1]) else latest_close
+    # Use completed candle [-2] for macro trend bias to avoid look-ahead bias
+    latest_close = float(df_h1['Close'].iloc[-2])
+    latest_ema50 = float(df_h1['ema50'].iloc[-2]) if pd.notna(df_h1['ema50'].iloc[-2]) else latest_close
+    latest_ema200 = float(df_h1['ema200'].iloc[-2]) if pd.notna(df_h1['ema200'].iloc[-2]) else latest_close
 
     if latest_close > latest_ema50 and latest_ema50 > latest_ema200:
         return "BULLISH"
@@ -259,15 +259,16 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- PRO STRATEGIES WITH SESSION & MOMENTUM FILTERS ---
+# --- PRO STRATEGIES WITH CLOSED-CANDLE CONFIRMATION ---
 
 def get_eurusd_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
-    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="3d")
+    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None
 
-    c = df_m15.iloc[-1]
+    # FIX: Use index [-2] (Completed Candle) to prevent repainting / look-ahead bias
+    c = df_m15.iloc[-2]
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
@@ -277,7 +278,6 @@ def get_eurusd_strategy_signal(ticker):
     close_p = float(c['Close'])
 
     sig = None
-    # Strict Z-Score + RSI + Trend + Candle Body Confirmation (Pro filter)
     if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH" and close_p > open_p:
         sig = "BUY"
     elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH" and close_p < open_p:
@@ -286,15 +286,14 @@ def get_eurusd_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None, None, None
 
-    live_price = float(c['Close'])
-    candle_time = pd.to_datetime(df_m15.index[-1])
+    entry = round(close_p, 4)
+    candle_time = pd.to_datetime(df_m15.index[-2])
     
-    recent_high = float(df_m15['High'].iloc[-12:-2].max())
-    recent_low = float(df_m15['Low'].iloc[-12:-2].min())
+    recent_high = float(df_m15['High'].iloc[-13:-3].max())
+    recent_low = float(df_m15['Low'].iloc[-13:-3].min())
     atr = float(c['atr14'])
 
     if sig == "BUY":
-        entry = round(live_price, 4)
         sl = round(min(entry - (atr * 1.2), recent_low - 0.0010), 4)
         sl_distance = round(entry - sl, 4)
         if sl_distance <= 0.0010:
@@ -302,7 +301,6 @@ def get_eurusd_strategy_signal(ticker):
             sl = round(entry - sl_distance, 4)
         tp = round(entry + (sl_distance * 2.5), 4)
     else:
-        entry = round(live_price, 4)
         sl = round(max(entry + (atr * 1.2), recent_high + 0.0010), 4)
         sl_distance = round(sl - entry, 4)
         if sl_distance <= 0.0010:
@@ -310,16 +308,16 @@ def get_eurusd_strategy_signal(ticker):
             sl = round(entry + sl_distance, 4)
         tp = round(entry - (sl_distance * 2.5), 4)
 
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance * 10000)
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
     return sig, entry, sl, tp, rec_lot, rsi, f"EURUSD (Z:{z_score:.2f})", candle_time
 
 def get_bitcoin_strategy_signal(ticker):
     h1_bias = get_h1_trend_bias(ticker)
-    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="2d")
+    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
     if df_m15 is None or len(df_m15) < 50:
         return None, None, None, None, None, None, None, None
 
-    c = df_m15.iloc[-1]
+    c = df_m15.iloc[-2]  # Completed candle
     if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
         return None, None, None, None, None, None, None, None
 
@@ -337,15 +335,14 @@ def get_bitcoin_strategy_signal(ticker):
     if not sig:
         return None, None, None, None, None, None, None, None
 
-    live_price = float(c['Close'])
-    candle_time = pd.to_datetime(df_m15.index[-1])
+    entry = round(close_p, 2)
+    candle_time = pd.to_datetime(df_m15.index[-2])
     
-    recent_high = float(df_m15['High'].iloc[-12:-2].max())
-    recent_low = float(df_m15['Low'].iloc[-12:-2].min())
+    recent_high = float(df_m15['High'].iloc[-13:-3].max())
+    recent_low = float(df_m15['Low'].iloc[-13:-3].min())
     atr = float(c['atr14'])
 
     if sig == "BUY":
-        entry = round(live_price, 2)
         sl = round(min(entry - (atr * 1.2), recent_low - 40.0), 2)
         sl_distance = round(entry - sl, 2)
         if sl_distance <= 20.0:
@@ -353,7 +350,6 @@ def get_bitcoin_strategy_signal(ticker):
             sl = round(entry - sl_distance, 2)
         tp = round(entry + (sl_distance * 2.5), 2)
     else:
-        entry = round(live_price, 2)
         sl = round(max(entry + (atr * 1.2), recent_high + 40.0), 2)
         sl_distance = round(sl - entry, 2)
         if sl_distance <= 20.0:
@@ -379,16 +375,6 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.data == "post_to_channel":
         original_text = query.message.text
         channel_text = original_text
-        if "• Lot:" in channel_text:
-            lines = channel_text.split("\n")
-            new_lines = []
-            for line in lines:
-                if line.startswith("• Lot:"):
-                    new_lines.append("• Lot: Use your own calculated lot size!")
-                else:
-                    new_lines.append(line)
-            channel_text = "\n".join(new_lines)
-
         try:
             await context.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID, 
@@ -408,7 +394,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine™️ // System Active**\nBalance: `${current_account_balance:.2f}`", 
+            f"🔓 **Divine™️ // Pro Quantitative Engine Active**\nBalance: `${current_account_balance:.2f}`", 
             parse_mode="Markdown"
         )
     else:
@@ -429,23 +415,22 @@ async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("☀️ **Divine™️ // System Online**", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_trades, last_signals
+    global active_trades, last_signal_timestamps
     if update.effective_user.id not in authorized_users:
         return
     
     args = context.args
     if args and args[0].upper() in ["WIN", "LOSS"]:
         outcome = args[0].upper()
-        pnl = float(args[1]) if len(args) > 1 else 0.0
-        record_trade_outcome(outcome, profit_loss_amount=pnl)
+        record_trade_outcome(outcome)
         active_trades.clear()
         save_active_trades()
-        last_signals.clear()
-        await update.message.reply_text(f"🧹 **Record Updated:** `{outcome}` | Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
+        last_signal_timestamps.clear()
+        await update.message.reply_text(f"🧹 **Record Updated Manually:** `{outcome}`", parse_mode="Markdown")
     else:
         active_trades.clear()
         save_active_trades()
-        last_signals.clear()
+        last_signal_timestamps.clear()
         await update.message.reply_text("🧹 **Active Trades Cleared & Signals Reset.**", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,7 +442,7 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             current_account_balance = float(args[0])
             save_trade_history()
-            await update.message.reply_text(f"💰 **Balance Saved:** `${current_account_balance:.2f}`", parse_mode="Markdown")
+            await update.message.reply_text(f"💰 **Balance Updated for Lot Calculation:** `${current_account_balance:.2f}`", parse_mode="Markdown")
             return
         except ValueError:
             pass
@@ -469,10 +454,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     state = "Offline" if not bot_active else (f"Limit Reached ({daily_losses_count}/{MAX_DAILY_LOSSES} Losses)" if daily_losses_count >= MAX_DAILY_LOSSES else "Active")
     win_rate, wins, losses, pf = get_quantitative_performance_metrics()
-    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Daily Losses: `{daily_losses_count}/{MAX_DAILY_LOSSES}`\n• Balance: `${current_account_balance:.2f}`\n"
+    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Daily Losses: `{daily_losses_count}/{MAX_DAILY_LOSSES}`\n• Balance Set: `${current_account_balance:.2f}`\n"
 
     if not active_trades:
-        text += "No active position."
+        text += "No active positions tracked."
     else:
         for label, trade in active_trades.items():
             text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
@@ -491,7 +476,7 @@ async def hourly_heartbeat_loop(app):
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                 await app.bot.send_message(
                     chat_id=target_user, 
-                    text=f"🟢 **Divine™️ Heartbeat** | {win_rate:.1f}% ({wins}W/{losses}L) | `${current_account_balance:.2f}`", 
+                    text=f"🟢 **Divine™️ Heartbeat** | {win_rate:.1f}% ({wins}W/{losses}L) | Balance: `${current_account_balance:.2f}`", 
                     parse_mode="Markdown"
                 )
         except Exception as e:
@@ -511,7 +496,7 @@ async def live_chart_guidance_loop(app):
             for label, trade in list(active_trades.items()):
                 y_ticker = "EURUSD=X" if label == "EURUSD" else "BTC-USD"
                 df_live = fetch_data(y_ticker, interval=TIMEFRAME_M15, period="2d")
-                if df_live is None or len(df_live) < 10:
+                if df_live is None or len(df_live) < 5:
                     continue
 
                 current_price = float(df_live['Close'].iloc[-1])
@@ -521,13 +506,12 @@ async def live_chart_guidance_loop(app):
                 entry = trade["entry"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    est_pnl = abs(tp - entry) * 1.0 if label == "EURUSD" else abs(tp - entry) * 0.01
-                    record_trade_outcome("WIN", profit_loss_amount=est_pnl, ticker_label=label)
+                    record_trade_outcome("WIN", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🎯 **Divine™️ // TP Secured: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Balance: `${current_account_balance:.2f}`", 
+                            text=f"🎯 **Divine™️ // TP Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Update your MT5 record manually.", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
@@ -535,53 +519,16 @@ async def live_chart_guidance_loop(app):
                     continue
 
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    est_loss = -abs(entry - sl) * 1.0 if label == "EURUSD" else -abs(entry - sl) * 0.01
-                    record_trade_outcome("LOSS", profit_loss_amount=est_loss, ticker_label=label)
+                    record_trade_outcome("LOSS", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🛑 **Divine™️ // SL Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Balance: `${current_account_balance:.2f}`", 
+                            text=f"🛑 **Divine™️ // SL Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Update your MT5 record manually.", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
                     save_active_trades()
-                    continue
-
-                if not trade.get("breakeven_alerted", False):
-                    halfway_target = entry + (tp - entry) * 0.4 if trade_type == "BUY" else entry - (entry - tp) * 0.4
-                    condition = (current_price >= halfway_target) if trade_type == "BUY" else (current_price <= halfway_target)
-                    if condition:
-                        trade["breakeven_alerted"] = True
-                        save_active_trades()
-                        if target_user and authorized_users:
-                            await app.bot.send_message(
-                                chat_id=target_user,
-                                text=f"🔒 **Divine™️ // Risk Mitigation: {label}**\nMove SL to entry (`{entry}`) to secure risk-free position.",
-                                parse_mode="Markdown"
-                            )
-
-                current_z = float(df_live['z_score'].iloc[-1]) if 'z_score' in df_live.columns and pd.notna(df_live['z_score'].iloc[-1]) else 0.0
-                if (trade_type == "BUY" and current_z > 0.8) or (trade_type == "SELL" and current_z < -0.8):
-                    if target_user and authorized_users and not trade.get("invalidation_alerted", False):
-                        trade["invalidation_alerted"] = True
-                        save_active_trades()
-                        
-                        pnl_diff = (current_price - entry) if trade_type == "BUY" else (entry - current_price)
-                        est_pnl = max(0.05, pnl_diff) * 1.0 if label == "EURUSD" else max(0.5, pnl_diff) * 0.01
-                        record_trade_outcome("WIN", profit_loss_amount=est_pnl, ticker_label=label)
-                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                        
-                        await app.bot.send_message(
-                            chat_id=target_user, 
-                            text=f"🏆 **Divine™️ // Stall Alert (WIN): {label}**\n• Action: `Manually close trade on MT5`\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Balance: `${current_account_balance:.2f}`", 
-                            parse_mode="Markdown"
-                        )
-                    active_trades.pop(label, None)
-                    save_active_trades()
-                    for tkey, tlabel in {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}.items():
-                        if tlabel == label:
-                            last_signals.pop(tkey, None)
                     continue
 
         except Exception as e:
@@ -589,7 +536,7 @@ async def live_chart_guidance_loop(app):
             await asyncio.sleep(10)
 
 async def signal_loop(app):
-    global last_signals, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent, news_paused_state
+    global last_signal_timestamps, active_trades, today_date, daily_losses_count, daily_loss_limit_alert_sent
 
     while True:
         try:
@@ -598,7 +545,7 @@ async def signal_loop(app):
                 today_date = now_date
                 daily_losses_count = 0
                 daily_loss_limit_alert_sent = False
-                last_signals.clear()
+                last_signal_timestamps.clear()
                 save_trade_history()
 
             if not bot_active:
@@ -619,34 +566,12 @@ async def signal_loop(app):
                 await asyncio.sleep(60)
                 continue
 
-            if is_high_impact_news_window():
-                if not news_paused_state:
-                    news_paused_state = True
-                    if target_user and authorized_users:
-                        await app.bot.send_message(
-                            chat_id=target_user,
-                            text="⏸️ **Divine™️ // Market Pause:** High-impact news window.",
-                            parse_mode="Markdown"
-                        )
-                await asyncio.sleep(30)
-                continue
-            else:
-                if news_paused_state:
-                    news_paused_state = False
-                    if target_user and authorized_users:
-                        await app.bot.send_message(
-                            chat_id=target_user,
-                            text="▶️ **Divine™️ // Resumed:** Normal execution restored.",
-                            parse_mode="Markdown"
-                        )
-
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
                 if label in active_trades:
                     continue  
 
-                # Enforce Institutional Session Filter
                 if not is_prime_trading_session(ticker):
                     continue
 
@@ -654,11 +579,11 @@ async def signal_loop(app):
                 if sig is None:
                     continue
 
-                if last_signals.get(ticker) != sig:
-                    last_signals[ticker] = sig
+                candle_str = str(candle_time)
+                if last_signal_timestamps.get(ticker) != candle_str:
+                    last_signal_timestamps[ticker] = candle_str
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
-                    # --- REALISTIC M15 EXPIRATION CHECK (20 MINS THRESHOLD) ---
                     now_utc = pd.Timestamp.now(tz="UTC")
                     is_expired = False
                     if pd.notna(candle_time):
@@ -668,14 +593,13 @@ async def signal_loop(app):
                             candle_time = candle_time.tz_convert("UTC")
                         
                         time_diff_seconds = (now_utc - candle_time).total_seconds()
-                        if time_diff_seconds > 1200:  
+                        if time_diff_seconds > 1800:  # 30 min expiration window for closed candle
                             is_expired = True
 
                     if is_expired:
                         signal_text = (
                             f"⚠️ **Divine™️ // {label} {dir_icon} {sig} [EXPIRED]**\n"
-                            f"• Status: `Too late / Stale Signal`\n"
-                            f"• Entry: `{entry}`"
+                            f"• Status: `Stale Candle`"
                         )
                     else:
                         signal_text = (
@@ -683,7 +607,7 @@ async def signal_loop(app):
                             f"• Entry: `{entry}`\n"
                             f"• SL: `{sl}`\n"
                             f"• TP: `{tp}`\n"
-                            f"• Lot: `{rec_lot}`"
+                            f"• Risk-Calculated Lot: `{rec_lot}`"
                         )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
@@ -702,9 +626,7 @@ async def signal_loop(app):
                             "entry": entry,
                             "sl": sl,
                             "tp": tp,
-                            "timestamp": str(datetime.datetime.now(datetime.timezone.utc)),
-                            "breakeven_alerted": False,
-                            "invalidation_alerted": False
+                            "timestamp": str(datetime.datetime.now(datetime.timezone.utc))
                         }
                         save_active_trades()
         except Exception as e:
@@ -739,7 +661,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Divine™️ Quantitative Sniper Engine Running 24/7...")
+    logging.info("Divine™️ Professional Sniper Engine Running 24/7...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
