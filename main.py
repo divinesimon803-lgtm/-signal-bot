@@ -138,8 +138,6 @@ def get_quantitative_performance_metrics():
     return win_rate, wins, losses, profit_factor
 
 # --- INSTITUTIONAL SESSION FILTER ---
-news_paused_state = False
-
 def is_prime_trading_session(ticker):
     """Only trade during active London & New York session hours (07:00 to 21:00 UTC)."""
     now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -179,10 +177,6 @@ def run_flask():
 
 # --- MATHEMATICALLY TRUE RISK-BASED LOT CALCULATION ---
 def calculate_dynamic_lot(ticker, sl_distance):
-    """
-    Calculates exact lot size based on account balance, target risk % (1%),
-    and stop loss distance, ensuring safety on micro-accounts.
-    """
     global current_account_balance
     risk_dollar_amount = current_account_balance * RISK_PER_TRADE_PCT
     
@@ -190,11 +184,9 @@ def calculate_dynamic_lot(ticker, sl_distance):
         return 0.01
 
     if ticker == "BTC-USD":
-        # For crypto/BTC, 1 unit move = $1 per lot scale roughly
         pip_value = 1.0
         risk_per_lot = sl_distance * pip_value
     else:
-        # For Forex (EURUSD standard micro-lot pip value is ~$0.10 per pips for 0.01 lot)
         pip_value = 0.1 
         sl_pips = sl_distance * 10000
         risk_per_lot = sl_pips * pip_value
@@ -203,11 +195,10 @@ def calculate_dynamic_lot(ticker, sl_distance):
         return 0.01
 
     calculated_lot = risk_dollar_amount / risk_per_lot
-    # Enforce standard broker boundaries: minimum 0.01, capped safely
     final_lot = round(calculated_lot, 2)
     return max(0.01, min(final_lot, 0.05))
 
-# --- DATA FETCHER & INDICATORS ---
+# --- DATA FETCHER & INDICATORS (TREND-PULLBACK SUITE) ---
 def fetch_data(ticker, interval, period="5d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False)
@@ -230,13 +221,10 @@ def fetch_data(ticker, interval, period="5d"):
             return None
 
         df['atr14'] = ta.volatility.average_true_range(high_series, low_series, close_series, window=14)
+        df['ema20'] = ta.trend.ema_indicator(close_series, window=20)
         df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
-        
-        rolling_mean = close_series.rolling(window=20).mean()
-        rolling_std = close_series.rolling(window=20).std()
-        df['z_score'] = (close_series - rolling_mean) / rolling_std
 
         return df
     except Exception as e:
@@ -248,7 +236,6 @@ def get_h1_trend_bias(ticker):
     if df_h1 is None or len(df_h1) < 200:
         return "NEUTRAL"
     
-    # Use completed candle [-2] for macro trend bias to avoid look-ahead bias
     latest_close = float(df_h1['Close'].iloc[-2])
     latest_ema50 = float(df_h1['ema50'].iloc[-2]) if pd.notna(df_h1['ema50'].iloc[-2]) else latest_close
     latest_ema200 = float(df_h1['ema200'].iloc[-2]) if pd.notna(df_h1['ema200'].iloc[-2]) else latest_close
@@ -259,113 +246,64 @@ def get_h1_trend_bias(ticker):
         return "BEARISH"
     return "NEUTRAL"
 
-# --- PRO STRATEGIES WITH CLOSED-CANDLE CONFIRMATION ---
-
-def get_eurusd_strategy_signal(ticker):
-    h1_bias = get_h1_trend_bias(ticker)
-    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
-    if df_m15 is None or len(df_m15) < 50:
-        return None, None, None, None, None, None, None, None
-
-    # FIX: Use index [-2] (Completed Candle) to prevent repainting / look-ahead bias
-    c = df_m15.iloc[-2]
-    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
-        return None, None, None, None, None, None, None, None
-
-    rsi = float(c['rsi14'])
-    z_score = float(c['z_score'])
-    open_p = float(c['Open'])
-    close_p = float(c['Close'])
-
-    sig = None
-    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH" and close_p > open_p:
-        sig = "BUY"
-    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH" and close_p < open_p:
-        sig = "SELL"
-
-    if not sig:
-        return None, None, None, None, None, None, None, None
-
-    entry = round(close_p, 4)
-    candle_time = pd.to_datetime(df_m15.index[-2])
-    
-    recent_high = float(df_m15['High'].iloc[-13:-3].max())
-    recent_low = float(df_m15['Low'].iloc[-13:-3].min())
-    atr = float(c['atr14'])
-
-    if sig == "BUY":
-        sl = round(min(entry - (atr * 1.2), recent_low - 0.0010), 4)
-        sl_distance = round(entry - sl, 4)
-        if sl_distance <= 0.0010:
-            sl_distance = 0.0020
-            sl = round(entry - sl_distance, 4)
-        tp = round(entry + (sl_distance * 2.5), 4)
-    else:
-        sl = round(max(entry + (atr * 1.2), recent_high + 0.0010), 4)
-        sl_distance = round(sl - entry, 4)
-        if sl_distance <= 0.0010:
-            sl_distance = 0.0020
-            sl = round(entry + sl_distance, 4)
-        tp = round(entry - (sl_distance * 2.5), 4)
-
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"EURUSD (Z:{z_score:.2f})", candle_time
-
-def get_bitcoin_strategy_signal(ticker):
-    h1_bias = get_h1_trend_bias(ticker)
-    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
-    if df_m15 is None or len(df_m15) < 50:
-        return None, None, None, None, None, None, None, None
-
-    c = df_m15.iloc[-2]  # Completed candle
-    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['z_score']):
-        return None, None, None, None, None, None, None, None
-
-    rsi = float(c['rsi14'])
-    z_score = float(c['z_score'])
-    open_p = float(c['Open'])
-    close_p = float(c['Close'])
-
-    sig = None
-    if z_score <= -1.9 and rsi < 32 and h1_bias != "BEARISH" and close_p > open_p:
-        sig = "BUY"
-    elif z_score >= 1.9 and rsi > 68 and h1_bias != "BULLISH" and close_p < open_p:
-        sig = "SELL"
-
-    if not sig:
-        return None, None, None, None, None, None, None, None
-
-    entry = round(close_p, 2)
-    candle_time = pd.to_datetime(df_m15.index[-2])
-    
-    recent_high = float(df_m15['High'].iloc[-13:-3].max())
-    recent_low = float(df_m15['Low'].iloc[-13:-3].min())
-    atr = float(c['atr14'])
-
-    if sig == "BUY":
-        sl = round(min(entry - (atr * 1.2), recent_low - 40.0), 2)
-        sl_distance = round(entry - sl, 2)
-        if sl_distance <= 20.0:
-            sl_distance = 80.0
-            sl = round(entry - sl_distance, 2)
-        tp = round(entry + (sl_distance * 2.5), 2)
-    else:
-        sl = round(max(entry + (atr * 1.2), recent_high + 40.0), 2)
-        sl_distance = round(sl - entry, 2)
-        if sl_distance <= 20.0:
-            sl_distance = 80.0
-            sl = round(entry + sl_distance, 2)
-        tp = round(entry - (sl_distance * 2.5), 2)
-
-    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-    return sig, entry, sl, tp, rec_lot, rsi, f"BTC (Z:{z_score:.2f})", candle_time
-
+# --- NEW TREND-PULLBACK STRATEGY LOGIC ---
 def get_strategy_signal(ticker):
+    h1_bias = get_h1_trend_bias(ticker)
+    if h1_bias == "NEUTRAL":
+        return None, None, None, None, None, None, None, None
+
+    df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="5d")
+    if df_m15 is None or len(df_m15) < 50:
+        return None, None, None, None, None, None, None, None
+
+    # Use completed candle [-2] to avoid repainting
+    c = df_m15.iloc[-2]
+    prev_c = df_m15.iloc[-3]
+    
+    if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema20']) or pd.isna(c['ema50']):
+        return None, None, None, None, None, None, None, None
+
+    close_p = float(c['Close'])
+    ema20 = float(c['ema20'])
+    rsi = float(c['rsi14'])
+    atr = float(c['atr14'])
+    candle_time = pd.to_datetime(df_m15.index[-2])
+
+    sig = None
+    # BULLISH PULLBACK: H1 is Bullish, price pulled back near/below EMA20, and crosses back above with RSI > 40
+    if h1_bias == "BULLISH":
+        if float(prev_c['Close']) <= float(prev_c['ema20']) and close_p > ema20 and rsi > 40:
+            sig = "BUY"
+
+    # BEARISH PULLBACK: H1 is Bearish, price pulled back near/above EMA20, and crosses back below with RSI < 60
+    elif h1_bias == "BEARISH":
+        if float(prev_c['Close']) >= float(prev_c['ema20']) and close_p < ema20 and rsi < 60:
+            sig = "SELL"
+
+    if not sig:
+        return None, None, None, None, None, None, None, None
+
     if ticker == "EURUSD=X":
-        return get_eurusd_strategy_signal(ticker)
-    elif ticker == "BTC-USD":
-        return get_bitcoin_strategy_signal(ticker)
-    return None, None, None, None, None, None, None, None
+        entry = round(close_p, 4)
+        if sig == "BUY":
+            sl = round(entry - (atr * 1.5), 4)
+            tp = round(entry + (atr * 2.5), 4)
+        else:
+            sl = round(entry + (atr * 1.5), 4)
+            tp = round(entry - (atr * 2.5), 4)
+        sl_distance = abs(entry - sl)
+    else: # BTC
+        entry = round(close_p, 2)
+        if sig == "BUY":
+            sl = round(entry - (atr * 1.5), 2)
+            tp = round(entry + (atr * 2.5), 2)
+        else:
+            sl = round(entry + (atr * 1.5), 2)
+            tp = round(entry - (atr * 2.5), 2)
+        sl_distance = abs(entry - sl)
+
+    rec_lot = calculate_dynamic_lot(ticker, sl_distance)
+    return sig, entry, sl, tp, rec_lot, rsi, f"{ticker} Trend-Pullback", candle_time
 
 # --- TELEGRAM BUTTON HANDLER ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,11 +312,10 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if query.data == "post_to_channel":
         original_text = query.message.text
-        channel_text = original_text
         try:
             await context.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID, 
-                text=channel_text, 
+                text=original_text, 
                 parse_mode="Markdown"
             )
             await query.edit_message_reply_markup(reply_markup=None)
@@ -394,7 +331,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine™️ // Pro Quantitative Engine Active**\nBalance: `${current_account_balance:.2f}`", 
+            f"🔓 **Divine™️ // Trend-Pullback Engine Active**\nBalance: `${current_account_balance:.2f}`", 
             parse_mode="Markdown"
         )
     else:
@@ -442,7 +379,7 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             current_account_balance = float(args[0])
             save_trade_history()
-            await update.message.reply_text(f"💰 **Balance Updated for Lot Calculation:** `${current_account_balance:.2f}`", parse_mode="Markdown")
+            await update.message.reply_text(f"💰 **Balance Updated:** `${current_account_balance:.2f}`", parse_mode="Markdown")
             return
         except ValueError:
             pass
@@ -503,7 +440,6 @@ async def live_chart_guidance_loop(app):
                 trade_type = trade["type"]
                 tp = trade["tp"]
                 sl = trade["sl"]
-                entry = trade["entry"]
 
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     record_trade_outcome("WIN", ticker_label=label)
@@ -592,15 +528,11 @@ async def signal_loop(app):
                         else:
                             candle_time = candle_time.tz_convert("UTC")
                         
-                        time_diff_seconds = (now_utc - candle_time).total_seconds()
-                        if time_diff_seconds > 1800:  # 30 min expiration window for closed candle
+                        if (now_utc - candle_time).total_seconds() > 1800:
                             is_expired = True
 
                     if is_expired:
-                        signal_text = (
-                            f"⚠️ **Divine™️ // {label} {dir_icon} {sig} [EXPIRED]**\n"
-                            f"• Status: `Stale Candle`"
-                        )
+                        signal_text = f"⚠️ **Divine™️ // {label} {dir_icon} {sig} [EXPIRED]**"
                     else:
                         signal_text = (
                             f"💎 **Divine™️ // {label} {dir_icon} {sig}**\n"
@@ -661,7 +593,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Divine™️ Professional Sniper Engine Running 24/7...")
+    logging.info("Divine™️ Trend-Pullback Engine Running 24/7...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
