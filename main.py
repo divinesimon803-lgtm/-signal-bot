@@ -270,12 +270,9 @@ def get_strategy_signal(ticker):
     candle_time = pd.to_datetime(df_m15.index[-2])
 
     sig = None
-    # BULLISH PULLBACK: H1 is Bullish, price pulled back near/below EMA20, and crosses back above with RSI > 40
     if h1_bias == "BULLISH":
         if float(prev_c['Close']) <= float(prev_c['ema20']) and close_p > ema20 and rsi > 40:
             sig = "BUY"
-
-    # BEARISH PULLBACK: H1 is Bearish, price pulled back near/above EMA20, and crosses back below with RSI < 60
     elif h1_bias == "BEARISH":
         if float(prev_c['Close']) >= float(prev_c['ema20']) and close_p < ema20 and rsi < 60:
             sig = "SELL"
@@ -420,6 +417,7 @@ async def hourly_heartbeat_loop(app):
             logging.error(f"Heartbeat error: {e}")
             await asyncio.sleep(60)
 
+# --- ENHANCED LIVE GUIDANCE WITH BREAKEVEN & REVERSAL ALERTS ---
 async def live_chart_guidance_loop(app):
     global active_trades
     while True:
@@ -437,10 +435,13 @@ async def live_chart_guidance_loop(app):
                     continue
 
                 current_price = float(df_live['Close'].iloc[-1])
+                current_ema20 = float(df_live['ema20'].iloc[-1])
                 trade_type = trade["type"]
                 tp = trade["tp"]
                 sl = trade["sl"]
+                entry = trade["entry"]
 
+                # 1. Check Take Profit Hit
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     record_trade_outcome("WIN", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -454,6 +455,7 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
+                # 2. Check Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     record_trade_outcome("LOSS", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -466,6 +468,52 @@ async def live_chart_guidance_loop(app):
                     active_trades.pop(label, None)
                     save_active_trades()
                     continue
+
+                # 3. RULE-BASED BREAKEVEN / MILESTONE ALERT (+50% distance to TP)
+                if not trade.get("be_notified", False):
+                    if trade_type == "BUY":
+                        halfway_target = entry + ((tp - entry) * 0.5)
+                        if current_price >= halfway_target:
+                            trade["be_notified"] = True
+                            save_active_trades()
+                            if target_user and authorized_users:
+                                await app.bot.send_message(
+                                    chat_id=target_user,
+                                    text=f"🛡️ **Divine™️ // Lock Profit Alert: {label} (BUY)**\n• Price has reached halfway to TP (`{current_price}`).\n• *Rule Suggestion:* Consider moving your MT5 Stop-Loss to Entry (`{entry}`) to lock in a risk-free trade!",
+                                    parse_mode="Markdown"
+                                )
+                    elif trade_type == "SELL":
+                        halfway_target = entry - ((entry - tp) * 0.5)
+                        if current_price <= halfway_target:
+                            trade["be_notified"] = True
+                            save_active_trades()
+                            if target_user and authorized_users:
+                                await app.bot.send_message(
+                                    chat_id=target_user,
+                                    text=f"🛡️ **Divine™️ // Lock Profit Alert: {label} (SELL)**\n• Price has reached halfway to TP (`{current_price}`).\n• *Rule Suggestion:* Consider moving your MT5 Stop-Loss to Entry (`{entry}`) to lock in a risk-free trade!",
+                                    parse_mode="Markdown"
+                                )
+
+                # 4. RULE-BASED REVERSAL WARNING (Price crosses back over EMA20 against trade direction)
+                if not trade.get("reversal_warned", False):
+                    if trade_type == "BUY" and current_price < current_ema20:
+                        trade["reversal_warned"] = True
+                        save_active_trades()
+                        if target_user and authorized_users:
+                            await app.bot.send_message(
+                                chat_id=target_user,
+                                text=f"⚠️ **Divine™️ // Reversal Warning: {label} (BUY)**\n• Price (`{current_price}`) has dropped back below the EMA20 (`{current_ema20:.2f}`).\n• *Rule Suggestion:* Trend momentum may be fading. Consider closing manually if you want to secure current profit.",
+                                parse_mode="Markdown"
+                            )
+                    elif trade_type == "SELL" and current_price > current_ema20:
+                        trade["reversal_warned"] = True
+                        save_active_trades()
+                        if target_user and authorized_users:
+                            await app.bot.send_message(
+                                chat_id=target_user,
+                                text=f"⚠️ **Divine™️ // Reversal Warning: {label} (SELL)**\n• Price (`{current_price}`) has risen back above the EMA20 (`{current_ema20:.2f}`).\n• *Rule Suggestion:* Trend momentum may be fading. Consider closing manually if you want to secure current profit.",
+                                parse_mode="Markdown"
+                            )
 
         except Exception as e:
             logging.error(f"Guidance error: {e}")
@@ -558,6 +606,8 @@ async def signal_loop(app):
                             "entry": entry,
                             "sl": sl,
                             "tp": tp,
+                            "be_notified": False,
+                            "reversal_warned": False,
                             "timestamp": str(datetime.datetime.now(datetime.timezone.utc))
                         }
                         save_active_trades()
@@ -593,7 +643,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Divine™️ Trend-Pullback Engine Running 24/7...")
+    logging.info("Divine™️ Trend-Pullback Engine Running 24/7 with Smart Alerts...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
