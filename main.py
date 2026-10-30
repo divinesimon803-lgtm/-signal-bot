@@ -404,6 +404,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
+# --- /ABOUT COMMAND (FOR DISCREET STRATEGY SHARING) ---
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    strategy_text = (
+        "📈 **My Trading Strategy Overview**\n\n"
+        "I focus on **Multi-Timeframe Trend-Pullback Trading** across major forex pairs and crypto assets (like EURUSD and BTC).\n\n"
+        "• **Macro Bias (H1):** I use the 50 and 200 EMA to determine the major market direction. I only trade in the direction of the institutional trend.\n"
+        "• **Execution Trigger (M15):** Rather than chasing breakouts, I wait for a healthy pullback to the 20 EMA combined with RSI momentum confirmation.\n"
+        "• **Risk Management:** Strict 1% risk per trade using ATR-based stop losses and a minimum 1:2.5 reward-to-risk ratio. Discipline and capital preservation come first!"
+    )
+    await update.message.reply_text(strategy_text, parse_mode="Markdown")
+
 # --- LOOPS WITH WRAPPED EXCEPTION SAFETY ---
 async def hourly_heartbeat_loop(app):
     while True:
@@ -446,6 +457,7 @@ async def live_chart_guidance_loop(app):
                 sl = trade["sl"]
                 entry = trade["entry"]
 
+                # 1. Check Take Profit Hit
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     record_trade_outcome("WIN", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -459,6 +471,7 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
+                # 2. Check Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     record_trade_outcome("LOSS", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -472,6 +485,7 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
+                # 3. RULE-BASED BREAKEVEN / MILESTONE ALERT (+50% distance to TP)
                 if not trade.get("be_notified", False):
                     if trade_type == "BUY":
                         halfway_target = entry + ((tp - entry) * 0.5)
@@ -496,25 +510,35 @@ async def live_chart_guidance_loop(app):
                                     parse_mode="Markdown"
                                 )
 
+                # 4. RULE-BASED REVERSAL WARNING + AUTO-CLOSE & OUTCOME RECORDING
                 if not trade.get("reversal_warned", False):
+                    is_reversed = False
                     if trade_type == "BUY" and current_price < current_ema20:
-                        trade["reversal_warned"] = True
-                        save_active_trades()
-                        if target_user and authorized_users:
-                            await app.bot.send_message(
-                                chat_id=target_user,
-                                text=f"⚠️ **Divine™️ // Reversal Warning: {label} (BUY)**\n• Price (`{current_price}`) dropped below EMA20 (`{current_ema20:.2f}`).",
-                                parse_mode="Markdown"
-                            )
+                        is_reversed = True
                     elif trade_type == "SELL" and current_price > current_ema20:
+                        is_reversed = True
+
+                    if is_reversed:
                         trade["reversal_warned"] = True
-                        save_active_trades()
+                        
+                        if trade_type == "BUY":
+                            outcome = "WIN" if current_price > entry else "LOSS"
+                        else:
+                            outcome = "WIN" if current_price < entry else "LOSS"
+
+                        record_trade_outcome(outcome, ticker_label=label)
+                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                        
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user,
-                                text=f"⚠️ **Divine™️ // Reversal Warning: {label} (SELL)**\n• Price (`{current_price}`) rose above EMA20 (`{current_ema20:.2f}`).",
+                                text=f"⚠️ **Divine™️ // Reversal Closed: {label} ({trade_type})**\n• Price (`{current_price}`) crossed EMA20 (`{current_ema20:.2f}`).\n• *Action:* Auto-stopped monitoring. Logged as `{outcome}` based on live price.\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)",
                                 parse_mode="Markdown"
                             )
+                        
+                        active_trades.pop(label, None)
+                        save_active_trades()
+                        continue
 
         except Exception as e:
             logging.error(f"Guidance loop error: {e}")
@@ -636,6 +660,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("about", about_command))  # Registered /about command handler
     app.add_handler(CallbackQueryHandler(button_click_handler))
 
     flask_thread = Thread(target=run_flask, daemon=True)
