@@ -414,7 +414,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(strategy_text, parse_mode="Markdown")
 
-# --- PRO MENTOR GUIDANCE LOOP ---
+# --- PRO MENTOR GUIDANCE LOOP (BREAKEVEN ONLY, NO MANUAL CLOSE) ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
@@ -450,8 +450,6 @@ async def live_chart_guidance_loop(app):
                     continue
 
                 current_price = float(df_live['Close'].iloc[-1])
-                current_ema20 = float(df_live['ema20'].iloc[-1])
-                current_ema50 = float(df_live['ema50'].iloc[-1])
                 trade_type = trade["type"]
                 tp = trade["tp"]
                 sl = trade["sl"]
@@ -485,7 +483,7 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
-                # 3. Breakeven / Secure Profit Alert (50% distance to TP)
+                # 3. Breakeven / Secure Profit Alert (50% distance to TP) - Pure Professional Guidance
                 if not trade.get("be_notified", False):
                     if (trade_type == "BUY" and current_price >= entry + ((tp - entry) * 0.5)) or \
                        (trade_type == "SELL" and current_price <= entry - ((entry - tp) * 0.5)):
@@ -494,32 +492,9 @@ async def live_chart_guidance_loop(app):
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user,
-                                text=f"🛡️ **Manage Risk: {label}**\n• Price halfway to TP. Consider moving SL to entry (`{entry}`).",
+                                text=f"🛡️ **Breakeven Secured: {label} ({trade_type})**\n• Price reached halfway to TP.\n• *Action:* Move your Stop Loss to entry (`{entry}`) to lock in a risk-free trade!",
                                 parse_mode="Markdown"
                             )
-
-                # 4. STRICT PRO REVERSAL CHECK (Only triggers if structure genuinely breaks against us)
-                # For BUY: triggers only if price drops back below the 50 EMA (meaning trend failure)
-                # For SELL: triggers only if price rises back above the 50 EMA
-                if not trade.get("reversal_warned", False):
-                    is_structure_broken = False
-                    if trade_type == "BUY" and current_price < current_ema50:
-                        is_structure_broken = True
-                    elif trade_type == "SELL" and current_price > current_ema50:
-                        is_structure_broken = True
-
-                    if is_structure_broken:
-                        trade["reversal_warned"] = True
-                        save_active_trades()
-                        if target_user and authorized_users:
-                            await app.bot.send_message(
-                                chat_id=target_user,
-                                text=f"⚠️ **Close Trade Manually: {label} ({trade_type})**\n• Trend structure broken (crossed EMA50 at `{current_price}`).\n• *Action:* Stopping monitoring. Secure your position now.",
-                                parse_mode="Markdown"
-                            )
-                        active_trades.pop(label, None)
-                        save_active_trades()
-                        continue
 
         except Exception as e:
             logging.error(f"Guidance error: {e}")
