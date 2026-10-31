@@ -274,10 +274,10 @@ def get_strategy_signal(ticker):
 
         sig = None
         if h1_bias == "BULLISH":
-            if float(prev_c['Close']) <= float(prev_c['ema20']) and close_p > ema20 and rsi > 40:
+            if float(prev_c['Close']) <= float(prev_c['ema20']) and close_p > ema20 and rsi > 45:
                 sig = "BUY"
         elif h1_bias == "BEARISH":
-            if float(prev_c['Close']) >= float(prev_c['ema20']) and close_p < ema20 and rsi < 60:
+            if float(prev_c['Close']) >= float(prev_c['ema20']) and close_p < ema20 and rsi < 55:
                 sig = "SELL"
 
         if not sig:
@@ -322,10 +322,10 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode="Markdown"
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ **Published to Channel.**", parse_mode="Markdown")
+            await query.message.reply_text("✅ **Published.**", parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Channel post error: {e}")
-            await query.message.reply_text(f"❌ Broadcast Failed: {e}", parse_mode="Markdown")
+            await query.message.reply_text(f"❌ Failed: {e}", parse_mode="Markdown")
 
 # --- COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,7 +334,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine™️ // Trend-Pullback Engine Active**\nBalance: `${current_account_balance:.2f}`", 
+            f"🔓 **Divine™️ // Pro Mentor Active**\nBalance: `${current_account_balance:.2f}`", 
             parse_mode="Markdown"
         )
     else:
@@ -345,14 +345,14 @@ async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     bot_active = False
-    await update.message.reply_text("🌙 **Divine™️ // System Offline**", parse_mode="Markdown")
+    await update.message.reply_text("🌙 **Offline**", parse_mode="Markdown")
 
 async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if update.effective_user.id not in authorized_users:
         return
     bot_active = True
-    await update.message.reply_text("☀️ **Divine™️ // System Online**", parse_mode="Markdown")
+    await update.message.reply_text("☀️ **Online**", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades, last_signal_timestamps
@@ -366,12 +366,12 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_trades.clear()
         save_active_trades()
         last_signal_timestamps.clear()
-        await update.message.reply_text(f"🧹 **Record Updated Manually:** `{outcome}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🧹 **Recorded:** `{outcome}`", parse_mode="Markdown")
     else:
         active_trades.clear()
         save_active_trades()
         last_signal_timestamps.clear()
-        await update.message.reply_text("🧹 **Active Trades Cleared & Signals Reset.**", parse_mode="Markdown")
+        await update.message.reply_text("🧹 **Active Trades Reset.**", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -382,40 +382,39 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             current_account_balance = float(args[0])
             save_trade_history()
-            await update.message.reply_text(f"💰 **Balance Updated:** `${current_account_balance:.2f}`", parse_mode="Markdown")
+            await update.message.reply_text(f"💰 **Balance:** `${current_account_balance:.2f}`", parse_mode="Markdown")
             return
         except ValueError:
             pass
-    await update.message.reply_text(f"💰 **Current Balance:** `${current_account_balance:.2f}`", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 **Balance:** `${current_account_balance:.2f}`", parse_mode="Markdown")
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Offline" if not bot_active else (f"Limit Reached ({daily_losses_count}/{MAX_DAILY_LOSSES} Losses)" if daily_losses_count >= MAX_DAILY_LOSSES else "Active")
-    win_rate, wins, losses, pf = get_quantitative_performance_metrics()
-    text = f"📊 **Divine™️ Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Daily Losses: `{daily_losses_count}/{MAX_DAILY_LOSSES}`\n• Balance Set: `${current_account_balance:.2f}`\n"
+    state = "Offline" if not bot_active else (f"Limit Reached ({daily_losses_count}/3)" if daily_losses_count >= 3 else "Active")
+    win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+    text = f"📊 **Status:** `{state}`\n• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n• Balance: `${current_account_balance:.2f}`\n"
 
     if not active_trades:
-        text += "No active positions tracked."
+        text += "No active positions."
     else:
         for label, trade in active_trades.items():
             text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
     
     await update.message.reply_text(text, parse_mode="Markdown")
 
-# --- /ABOUT COMMAND (FOR DISCREET STRATEGY SHARING) ---
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategy_text = (
-        "📈 **My Trading Strategy Overview**\n\n"
-        "I focus on **Multi-Timeframe Trend-Pullback Trading** across major forex pairs and crypto assets (like EURUSD and BTC).\n\n"
-        "• **Macro Bias (H1):** I use the 50 and 200 EMA to determine the major market direction. I only trade in the direction of the institutional trend.\n"
-        "• **Execution Trigger (M15):** Rather than chasing breakouts, I wait for a healthy pullback to the 20 EMA combined with RSI momentum confirmation.\n"
-        "• **Risk Management:** Strict 1% risk per trade using ATR-based stop losses and a minimum 1:2.5 reward-to-risk ratio. Discipline and capital preservation come first!"
+        "📈 **Trading Strategy Overview**\n\n"
+        "Multi-Timeframe Trend-Pullback system on major pairs (EURUSD, BTC).\n\n"
+        "• **Macro Bias (H1):** 50/200 EMA alignment for institutional direction.\n"
+        "• **Execution (M15):** Pullback to 20 EMA + RSI momentum confirmation.\n"
+        "• **Risk Control:** Strict 1% risk per trade with structural ATR Stop Losses and 1:2.5+ Risk-to-Reward ratio."
     )
     await update.message.reply_text(strategy_text, parse_mode="Markdown")
 
-# --- LOOPS WITH WRAPPED EXCEPTION SAFETY ---
+# --- PRO MENTOR GUIDANCE LOOP ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
@@ -427,11 +426,11 @@ async def hourly_heartbeat_loop(app):
                 win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                 await app.bot.send_message(
                     chat_id=target_user, 
-                    text=f"🟢 **Divine™️ Heartbeat** | {win_rate:.1f}% ({wins}W/{losses}L) | Balance: `${current_account_balance:.2f}`", 
+                    text=f"🟢 **Heartbeat** | {win_rate:.1f}% ({wins}W/{losses}L) | Balance: `${current_account_balance:.2f}`", 
                     parse_mode="Markdown"
                 )
         except Exception as e:
-            logging.error(f"Heartbeat loop error: {e}")
+            logging.error(f"Heartbeat error: {e}")
             await asyncio.sleep(60)
 
 async def live_chart_guidance_loop(app):
@@ -452,6 +451,7 @@ async def live_chart_guidance_loop(app):
 
                 current_price = float(df_live['Close'].iloc[-1])
                 current_ema20 = float(df_live['ema20'].iloc[-1])
+                current_ema50 = float(df_live['ema50'].iloc[-1])
                 trade_type = trade["type"]
                 tp = trade["tp"]
                 sl = trade["sl"]
@@ -464,7 +464,7 @@ async def live_chart_guidance_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🎯 **Divine™️ // TP Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Update your MT5 record manually.", 
+                            text=f"🎯 **TP Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
@@ -478,70 +478,51 @@ async def live_chart_guidance_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user, 
-                            text=f"🛑 **Divine™️ // SL Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)\n• Update your MT5 record manually.", 
+                            text=f"🛑 **SL Hit: {label}**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
                             parse_mode="Markdown"
                         )
                     active_trades.pop(label, None)
                     save_active_trades()
                     continue
 
-                # 3. RULE-BASED BREAKEVEN / MILESTONE ALERT (+50% distance to TP)
+                # 3. Breakeven / Secure Profit Alert (50% distance to TP)
                 if not trade.get("be_notified", False):
-                    if trade_type == "BUY":
-                        halfway_target = entry + ((tp - entry) * 0.5)
-                        if current_price >= halfway_target:
-                            trade["be_notified"] = True
-                            save_active_trades()
-                            if target_user and authorized_users:
-                                await app.bot.send_message(
-                                    chat_id=target_user,
-                                    text=f"🛡️ **Divine™️ // Lock Profit Alert: {label} (BUY)**\n• Price reached halfway to TP (`{current_price}`).\n• *Rule Suggestion:* Move SL to Entry (`{entry}`) for a risk-free trade!",
-                                    parse_mode="Markdown"
-                                )
-                    elif trade_type == "SELL":
-                        halfway_target = entry - ((entry - tp) * 0.5)
-                        if current_price <= halfway_target:
-                            trade["be_notified"] = True
-                            save_active_trades()
-                            if target_user and authorized_users:
-                                await app.bot.send_message(
-                                    chat_id=target_user,
-                                    text=f"🛡️ **Divine™️ // Lock Profit Alert: {label} (SELL)**\n• Price reached halfway to TP (`{current_price}`).\n• *Rule Suggestion:* Move SL to Entry (`{entry}`) for a risk-free trade!",
-                                    parse_mode="Markdown"
-                                )
-
-                # 4. RULE-BASED REVERSAL WARNING + AUTO-CLOSE & OUTCOME RECORDING
-                if not trade.get("reversal_warned", False):
-                    is_reversed = False
-                    if trade_type == "BUY" and current_price < current_ema20:
-                        is_reversed = True
-                    elif trade_type == "SELL" and current_price > current_ema20:
-                        is_reversed = True
-
-                    if is_reversed:
-                        trade["reversal_warned"] = True
-                        
-                        if trade_type == "BUY":
-                            outcome = "WIN" if current_price > entry else "LOSS"
-                        else:
-                            outcome = "WIN" if current_price < entry else "LOSS"
-
-                        record_trade_outcome(outcome, ticker_label=label)
-                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                        
+                    if (trade_type == "BUY" and current_price >= entry + ((tp - entry) * 0.5)) or \
+                       (trade_type == "SELL" and current_price <= entry - ((entry - tp) * 0.5)):
+                        trade["be_notified"] = True
+                        save_active_trades()
                         if target_user and authorized_users:
                             await app.bot.send_message(
                                 chat_id=target_user,
-                                text=f"⚠️ **Divine™️ // Reversal Closed: {label} ({trade_type})**\n• Price (`{current_price}`) crossed EMA20 (`{current_ema20:.2f}`).\n• *Action:* Auto-stopped monitoring. Logged as `{outcome}` based on live price.\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)",
+                                text=f"🛡️ **Manage Risk: {label}**\n• Price halfway to TP. Consider moving SL to entry (`{entry}`).",
                                 parse_mode="Markdown"
                             )
-                        
+
+                # 4. STRICT PRO REVERSAL CHECK (Only triggers if structure genuinely breaks against us)
+                # For BUY: triggers only if price drops back below the 50 EMA (meaning trend failure)
+                # For SELL: triggers only if price rises back above the 50 EMA
+                if not trade.get("reversal_warned", False):
+                    is_structure_broken = False
+                    if trade_type == "BUY" and current_price < current_ema50:
+                        is_structure_broken = True
+                    elif trade_type == "SELL" and current_price > current_ema50:
+                        is_structure_broken = True
+
+                    if is_structure_broken:
+                        trade["reversal_warned"] = True
+                        save_active_trades()
+                        if target_user and authorized_users:
+                            await app.bot.send_message(
+                                chat_id=target_user,
+                                text=f"⚠️ **Close Trade Manually: {label} ({trade_type})**\n• Trend structure broken (crossed EMA50 at `{current_price}`).\n• *Action:* Stopping monitoring. Secure your position now.",
+                                parse_mode="Markdown"
+                            )
                         active_trades.pop(label, None)
                         save_active_trades()
                         continue
 
         except Exception as e:
-            logging.error(f"Guidance loop error: {e}")
+            logging.error(f"Guidance error: {e}")
             await asyncio.sleep(10)
 
 async def signal_loop(app):
@@ -569,7 +550,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text=f"🛑 **Divine™️ // Circuit Breaker:** Daily limit reached ({MAX_DAILY_LOSSES}/{MAX_DAILY_LOSSES}). Pausing.",
+                            text=f"🛑 **Circuit Breaker:** Daily loss limit ({MAX_DAILY_LOSSES}) reached. Pausing.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(60)
@@ -605,14 +586,14 @@ async def signal_loop(app):
                             is_expired = True
 
                     if is_expired:
-                        signal_text = f"⚠️ **Divine™️ // {label} {dir_icon} {sig} [EXPIRED]**"
+                        signal_text = f"⚠️ **{label} {dir_icon} {sig} [EXPIRED]**"
                     else:
                         signal_text = (
                             f"💎 **Divine™️ // {label} {dir_icon} {sig}**\n"
                             f"• Entry: `{entry}`\n"
                             f"• SL: `{sl}`\n"
                             f"• TP: `{tp}`\n"
-                            f"• Risk-Calculated Lot: `{rec_lot}`"
+                            f"• Lot: `{rec_lot}`"
                         )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
@@ -660,7 +641,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("about", about_command))  # Registered /about command handler
+    app.add_handler(CommandHandler("about", about_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
 
     flask_thread = Thread(target=run_flask, daemon=True)
@@ -669,7 +650,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Divine™️ Bulletproof Trend-Pullback Engine Running 24/7...")
+    logging.info("Divine™️ Pro Mentor Engine Running 24/7...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
