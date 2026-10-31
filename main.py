@@ -27,7 +27,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID)
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
-RISK_PER_TRADE_PCT = 0.01  # Strict 1% risk profile
+RISK_PER_TRADE_PCT = 0.01  # Strict 1% risk profile per trade
 
 # --- ACCOUNT BALANCE & STATE MANAGEMENT ---
 current_account_balance = 10.00  
@@ -293,13 +293,15 @@ def get_strategy_signal(ticker):
                 tp = round(entry - (atr * 2.5), 4)
             sl_distance = abs(entry - sl)
         else:
+            # STRICT BROKER-COMPLIANT BTCUSD BUFFER (Enforces minimum $300 / 30,000 points away)
             entry = round(close_p, 2)
+            btc_buffer = max(atr * 1.5, 300.0) 
             if sig == "BUY":
-                sl = round(entry - (atr * 1.5), 2)
-                tp = round(entry + (atr * 2.5), 2)
+                sl = round(entry - btc_buffer, 2)
+                tp = round(entry + (btc_buffer * 2.0), 2)
             else:
-                sl = round(entry + (atr * 1.5), 2)
-                tp = round(entry - (atr * 2.5), 2)
+                sl = round(entry + btc_buffer, 2)
+                tp = round(entry - (btc_buffer * 2.0), 2)
             sl_distance = abs(entry - sl)
 
         rec_lot = calculate_dynamic_lot(ticker, sl_distance)
