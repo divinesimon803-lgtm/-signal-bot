@@ -143,7 +143,10 @@ def is_prime_trading_session(ticker):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     
-    if ticker == "EURUSD=X" and weekday >= 5:
+    # Weekend handling: allow only if extreme high probability checks pass
+    if weekday >= 5:
+        if ticker == "BTC-USD":
+            return True # Allowed on weekends with 99%+ strict rule
         return False
         
     if 7 <= now_utc.hour < 21:
@@ -225,6 +228,10 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
+        
+        # Bollinger Bands for chop and fake breakout detection
+        indicator_bb = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
+        df['bb_width'] = (indicator_bb.bollinger_hband() - indicator_bb.bollinger_lband()) / close_series
 
         return df
     except Exception as e:
@@ -241,7 +248,6 @@ def get_h1_trend_bias(ticker):
         latest_ema50 = float(df_h1['ema50'].iloc[-2]) if pd.notna(df_h1['ema50'].iloc[-2]) else latest_close
         latest_ema200 = float(df_h1['ema200'].iloc[-2]) if pd.notna(df_h1['ema200'].iloc[-2]) else latest_close
 
-        # Calculate separation strength for quality scoring
         separation = abs(latest_ema50 - latest_ema200) / latest_close
 
         if latest_close > latest_ema50 and latest_ema50 > latest_ema200:
@@ -253,29 +259,44 @@ def get_h1_trend_bias(ticker):
         logging.error(f"H1 Trend Bias error for {ticker}: {e}")
         return "NEUTRAL", 0.0
 
-# --- PRO-GRADE 85% - 90% SETUP QUALITY CONFIDENCE FILTER ---
-def calculate_setup_confidence(h1_bias, separation, rsi, atr, close_p):
-    """Ensure setup meets an 85% - 90% professional quality threshold before execution."""
-    score = 70.0  # Base institutional framework score
+# --- STRICT PRO-GRADE 96% - 99% SETUP QUALITY CONFIDENCE FILTER ---
+def calculate_setup_confidence(h1_bias, separation, rsi, atr, bb_width, is_weekend):
+    """Enforce extreme strictness: 96%+ quality required, filtering chop, fake breakouts, and low liquidity."""
+    score = 80.0  
 
-    # Factor 1: Macro Trend Cleanliness (H1 EMA separation)
-    if separation > 0.001:
-        score += 10.0
-    
-    # Factor 2: RSI Momentum Quality
-    if 48 <= rsi <= 55 or 45 <= rsi <= 58:
-        score += 10.0
-    elif rsi > 60 or rsi < 40:
-        score += 5.0
+    # Factor 1: Clean institutional trend separation
+    if separation > 0.0015:
+        score += 8.0
+    elif separation < 0.0005:
+        return 0.0 # Chop filter: Reject sideways or weak markets
 
-    # Factor 3: Volatility sanity check (ATR shouldn't be dead/flat)
-    if atr > 0:
-        score += 10.0
+    # Factor 2: Pristine RSI momentum alignment
+    if 48 <= rsi <= 52 or 46 <= rsi <= 54:
+        score += 8.0
+    elif rsi > 65 or rsi < 35:
+        score += 4.0
+    else:
+        return 0.0 # Filter out ambiguous mid-range momentum chop
 
-    return min(score, 98.0)
+    # Factor 3: Volatility & Bollinger Band width check (Avoid dead / fake breakout zones)
+    if bb_width is not None and bb_width > 0.002:
+        score += 4.0
+    else:
+        return 0.0 # Low liquidity / tight consolidation filter
+
+    # Weekend strict multiplier (Must achieve 99% rating for weekends)
+    if is_weekend:
+        if score >= 95.0:
+            return 99.0
+        return 0.0 # Suppress low-conviction weekend trades entirely
+
+    return min(score, 99.0)
 
 def get_strategy_signal(ticker):
     try:
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        is_weekend = now_utc.weekday() >= 5
+
         h1_bias, separation = get_h1_trend_bias(ticker)
         if h1_bias == "NEUTRAL":
             return None, None, None, None, None, None, None, None, 0.0
@@ -294,6 +315,7 @@ def get_strategy_signal(ticker):
         ema20 = float(c['ema20'])
         rsi = float(c['rsi14'])
         atr = float(c['atr14'])
+        bb_width = float(c['bb_width']) if 'bb_width' in c and pd.notna(c['bb_width']) else 0.005
         candle_time = pd.to_datetime(df_m15.index[-2])
 
         sig = None
@@ -307,10 +329,12 @@ def get_strategy_signal(ticker):
         if not sig:
             return None, None, None, None, None, None, None, None, 0.0
 
-        # Evaluate Pro Quality Confidence Score (Must be >= 85%)
-        confidence_score = calculate_setup_confidence(h1_bias, separation, rsi, atr, close_p)
-        if confidence_score < 85.0:
-            logging.info(f"Setup filtered out for {ticker}: Confidence score {confidence_score:.1f}% below 85% threshold.")
+        # Enforce strict 96%+ quality threshold (and 99% for weekends)
+        confidence_score = calculate_setup_confidence(h1_bias, separation, rsi, atr, bb_width, is_weekend)
+        required_threshold = 99.0 if is_weekend else 96.0
+
+        if confidence_score < required_threshold:
+            logging.info(f"Filtered out {ticker}: Quality {confidence_score:.1f}% below strict threshold.")
             return None, None, None, None, None, None, None, None, 0.0
 
         if ticker == "EURUSD=X":
@@ -354,7 +378,7 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode="Markdown"
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ **Published.**", parse_mode="Markdown")
+            await query.message.reply_text("✅ **Published to Channel.**", parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Channel post error: {e}")
             await query.message.reply_text(f"❌ Failed: {e}", parse_mode="Markdown")
@@ -366,7 +390,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Divine™️ // Pro Mentor Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Stick to the framework. Trust the edge.", 
+            f"🔓 **Mentor Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Elite discipline. Zero compromise.", 
             parse_mode="Markdown"
         )
     else:
@@ -377,14 +401,14 @@ async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     bot_active = False
-    await update.message.reply_text("🌙 **Offline.** Rest is part of the pro discipline.", parse_mode="Markdown")
+    await update.message.reply_text("🌙 **Offline.** Protecting capital in bad conditions.", parse_mode="Markdown")
 
 async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if update.effective_user.id not in authorized_users:
         return
     bot_active = True
-    await update.message.reply_text("☀️ **Online.** Scanning for high-probability setups.", parse_mode="Markdown")
+    await update.message.reply_text("☀️ **Online.** Scanning for pristine high-probability setups.", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades, last_signal_timestamps
@@ -398,7 +422,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         active_trades.clear()
         save_active_trades()
         last_signal_timestamps.clear()
-        await update.message.reply_text(f"🧹 **Recorded:** `{outcome}`. Stay focused on execution.", parse_mode="Markdown")
+        await update.message.reply_text(f"🧹 **Recorded:** `{outcome}`. Stay sharp.", parse_mode="Markdown")
     else:
         active_trades.clear()
         save_active_trades()
@@ -424,17 +448,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Active & Disciplined" if bot_active else "Offline"
+    state = "Active & Strict" if bot_active else "Offline"
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     text = (
-        f"📊 **Pro Mentor Status:** `{state}`\n"
+        f"📊 **Mentor Status:** `{state}`\n"
         f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
         f"• Balance: `${current_account_balance:.2f}`\n"
     )
 
     if not active_trades:
-        text += "No active positions. Patience is our edge."
+        text += "No active positions. Waiting for elite alignment."
     else:
         for label, trade in active_trades.items():
             text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
@@ -443,14 +467,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategy_text = (
-        "📈 **Pro Framework Overview**\n\n"
-        "• **Discipline:** Stick to one system. No strategy-hopping.\n"
-        "• **Quality Filter:** Minimum 85%+ setup confidence score required.\n"
-        "• **Risk Control:** Strict 1% risk per trade with broker-safe buffers."
+        "📈 **Framework Overview**\n\n"
+        "• **Discipline:** Absolute precision, zero guessing.\n"
+        "• **Quality Filter:** 96%+ requirement (99% on weekends).\n"
+        "• **Risk Control:** Strict risk management and strict market filtering."
     )
     await update.message.reply_text(strategy_text, parse_mode="Markdown")
 
-# --- PRO MENTOR GUIDANCE LOOP (MINDSET & REINFORCEMENT) ---
+# --- PRO MENTOR GUIDANCE LOOP ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
@@ -599,13 +623,14 @@ async def signal_loop(app):
                     if is_expired:
                         signal_text = f"⚠️ **{label} {dir_icon} {sig} [EXPIRED]**"
                     else:
+                        # Clean channel-ready professional message format (No bot titles, pure mentor style)
                         signal_text = (
-                            f"💎 **Divine™️ // Pro Signal [{confidence:.0f}% Quality]**\n"
-                            f"• Asset: `{label}` {dir_icon} `{sig}`\n"
-                            f"• Entry: `{entry}`\n"
-                            f"• SL: `{sl}`\n"
-                            f"• TP: `{tp}`\n"
-                            f"• Lot: `{rec_lot}`"
+                            f"{label} {dir_icon} {sig}\n"
+                            f"Quality: `{confidence:.0f}%`\n"
+                            f"Entry: `{entry}`\n"
+                            f"Recommended SL: `{sl}`\n"
+                            f"Recommended TP: `{tp}`\n\n"
+                            f"_Note: SL and TP are recommendations, feel free to manage your risk. Always risk only what you can afford to lose._"
                         )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
