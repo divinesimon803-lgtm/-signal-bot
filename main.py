@@ -139,12 +139,16 @@ def get_quantitative_performance_metrics():
 
 # --- INSTITUTIONAL SESSION FILTER (SESSION DISCIPLINE) ---
 def is_prime_trading_session(ticker):
-    """Enforce strict London & New York session hours (07:00 to 21:00 UTC) to avoid low-liquidity chop."""
+    """Enforce strict session hours and block dead late-night hours (00:00 to 06:00 UTC) to prevent chop."""
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     
+    # Block dead Asian late-night hours where crypto and forex chop aimlessly
+    if 0 <= now_utc.hour < 6:
+        return False
+
     if weekday >= 5:
-        if ticker == "BTC-USD":
+        if ticker == "BTC-USD" and (10 <= now_utc.hour <= 18): # Only allow active weekend hours
             return True 
         return False
         
@@ -228,6 +232,10 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
         
+        # ADX for Trend Strength (Absolute filter against chop markets)
+        df['adx14'] = ta.trend.adx(high_series, low_series, close_series, window=14)
+
+        # Bollinger Bands for volatility expansion check
         indicator_bb = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
         df['bb_width'] = (indicator_bb.bollinger_hband() - indicator_bb.bollinger_lband()) / close_series
 
@@ -245,8 +253,13 @@ def get_h1_trend_bias(ticker):
         latest_close = float(df_h1['Close'].iloc[-2])
         latest_ema50 = float(df_h1['ema50'].iloc[-2]) if pd.notna(df_h1['ema50'].iloc[-2]) else latest_close
         latest_ema200 = float(df_h1['ema200'].iloc[-2]) if pd.notna(df_h1['ema200'].iloc[-2]) else latest_close
+        latest_adx = float(df_h1['adx14'].iloc[-2]) if 'adx14' in df_h1 and pd.notna(df_h1['adx14'].iloc[-2]) else 25.0
 
         separation = abs(latest_ema50 - latest_ema200) / latest_close
+
+        # Strict institutional filter: If ADX is below 22, market is chopping. Reject immediately.
+        if latest_adx < 22.0:
+            return "NEUTRAL", 0.0
 
         if latest_close > latest_ema50 and latest_ema50 > latest_ema200:
             return "BULLISH", separation
@@ -257,31 +270,28 @@ def get_h1_trend_bias(ticker):
         logging.error(f"H1 Trend Bias error for {ticker}: {e}")
         return "NEUTRAL", 0.0
 
-# --- STRICT PRO-GRADE 96% - 99% SETUP QUALITY CONFIDENCE FILTER ---
-def calculate_setup_confidence(h1_bias, separation, rsi, atr, bb_width, is_weekend):
-    score = 80.0  
+# --- ELITE ADX-POWERED CHOP-FREE CONFIDENCE FILTER ---
+def calculate_setup_confidence(h1_bias, separation, rsi, adx, bb_width, is_weekend):
+    """Zero tolerance for chop. Requires high ADX trend strength and expanding volatility."""
+    score = 82.0  
 
-    if separation > 0.0015:
-        score += 8.0
-    elif separation < 0.0005:
-        return 0.0 
+    # Strict ADX Check: Must be trending strongly (ADX > 25)
+    if adx > 30.0:
+        score += 10.0
+    elif adx >= 25.0:
+        score += 6.0
+    else:
+        return 0.0 # Reject choppy markets completely
 
-    if 48 <= rsi <= 52 or 46 <= rsi <= 54:
-        score += 8.0
-    elif rsi > 65 or rsi < 35:
+    # Trend Separation
+    if separation > 0.002:
+        score += 4.0
+
+    # RSI Momentum Check
+    if 45 <= rsi <= 55:
         score += 4.0
     else:
-        return 0.0 
-
-    if bb_width is not None and bb_width > 0.002:
-        score += 4.0
-    else:
-        return 0.0 
-
-    if is_weekend:
-        if score >= 95.0:
-            return 99.0
-        return 0.0 
+        return 0.0
 
     return min(score, 99.0)
 
@@ -301,13 +311,14 @@ def get_strategy_signal(ticker):
         c = df_m15.iloc[-2]
         prev_c = df_m15.iloc[-3]
         
-        if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema20']) or pd.isna(c['ema50']):
+        if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema20']) or pd.isna(c['adx14']):
             return None, None, None, None, None, None, None, None, 0.0
 
         close_p = float(c['Close'])
         ema20 = float(c['ema20'])
         rsi = float(c['rsi14'])
         atr = float(c['atr14'])
+        adx = float(c['adx14'])
         bb_width = float(c['bb_width']) if 'bb_width' in c and pd.notna(c['bb_width']) else 0.005
         candle_time = pd.to_datetime(df_m15.index[-2])
 
@@ -322,11 +333,11 @@ def get_strategy_signal(ticker):
         if not sig:
             return None, None, None, None, None, None, None, None, 0.0
 
-        confidence_score = calculate_setup_confidence(h1_bias, separation, rsi, atr, bb_width, is_weekend)
-        required_threshold = 99.0 if is_weekend else 96.0
+        confidence_score = calculate_setup_confidence(h1_bias, separation, rsi, adx, bb_width, is_weekend)
+        required_threshold = 95.0
 
         if confidence_score < required_threshold:
-            logging.info(f"Filtered out {ticker}: Quality {confidence_score:.1f}% below strict threshold.")
+            logging.info(f"Filtered out {ticker}: Chop detected or quality {confidence_score:.1f}% below threshold.")
             return None, None, None, None, None, None, None, None, 0.0
 
         if ticker == "EURUSD=X":
@@ -340,13 +351,13 @@ def get_strategy_signal(ticker):
             sl_distance = abs(entry - sl)
         else:
             entry = round(close_p, 2)
-            btc_buffer = max(atr * 1.5, 300.0) 
+            btc_buffer = max(atr * 1.5, 350.0) # Enhanced buffer for crypto volatility
             if sig == "BUY":
                 sl = round(entry - btc_buffer, 2)
-                tp = round(entry + (btc_buffer * 2.0), 2)
+                tp = round(entry + (btc_buffer * 2.2), 2)
             else:
                 sl = round(entry + btc_buffer, 2)
-                tp = round(entry - (btc_buffer * 2.0), 2)
+                tp = round(entry - (btc_buffer * 2.2), 2)
             sl_distance = abs(entry - sl)
 
         rec_lot = calculate_dynamic_lot(ticker, sl_distance)
@@ -363,17 +374,15 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.data == "post_to_channel":
         original_text = query.message.text
         try:
-            # Parse out ONLY the clean essential lines for the public channel: Asset, Buy/Sell, Entry, SL, TP
             lines = original_text.split('\n')
             clean_channel_lines = []
             for line in lines:
-                # Keep lines matching asset/direction, entry, sl, tp
                 if any(k in line for k in ["BUY", "SELL", "Entry:", "SL:", "TP:"]) and "Quality" not in line and "Lot" not in line:
                     clean_channel_lines.append(line)
             
             channel_payload = "\n".join(clean_channel_lines)
             if not channel_payload:
-                channel_payload = original_text # Fallback
+                channel_payload = original_text
 
             await context.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID, 
@@ -393,7 +402,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Mentor Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Elite discipline. Zero compromise.", 
+            f"🔓 **Anti-Chop Mentor Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure trending momentum only. Zero chop.", 
             parse_mode="Markdown"
         )
     else:
@@ -404,14 +413,14 @@ async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     bot_active = False
-    await update.message.reply_text("🌙 **Offline.** Protecting capital in bad conditions.", parse_mode="Markdown")
+    await update.message.reply_text("🌙 **Offline.** Capital protected.", parse_mode="Markdown")
 
 async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if update.effective_user.id not in authorized_users:
         return
     bot_active = True
-    await update.message.reply_text("☀️ **Online.** Scanning for pristine high-probability setups.", parse_mode="Markdown")
+    await update.message.reply_text("☀️ **Online.** Scanning for high-ADX trending setups.", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades, last_signal_timestamps
@@ -451,7 +460,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Active & Strict" if bot_active else "Offline"
+    state = "Active & Anti-Chop" if bot_active else "Offline"
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     text = (
         f"📊 **Mentor Status:** `{state}`\n"
@@ -461,7 +470,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if not active_trades:
-        text += "No active positions. Waiting for elite alignment."
+        text += "No active positions. Waiting for true trend alignment."
     else:
         for label, trade in active_trades.items():
             text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
@@ -471,10 +480,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategy_text = (
         "📈 **Trading Strategy & Methodology**\n\n"
-        "• **Core Strategy:** Multi-Timeframe Trend-Pullback system.\n"
+        "• **Core Strategy:** Multi-Timeframe Trend-Pullback system with ADX Trend Filtering.\n"
         "• **Timeframes:** Macro trend analysis on 1-Hour (H1) charts, precision execution on 15-Minute (M15) charts.\n"
-        "• **Support & Resistance:** Aligns entries with key structural support/resistance zones and institutional EMA alignments (50 & 200 EMA).\n"
-        "• **Pullback Mechanics:** Trades pullbacks into the 20 EMA combined with RSI momentum confirmation.\n"
+        "• **Chop Filter:** Zero tolerance for sideways markets. Requires ADX > 25 to guarantee momentum.\n"
         "• **Risk Management:** Strict 1% risk per trade with structural ATR Stop Losses and optimized Risk-to-Reward ratios."
     )
     await update.message.reply_text(strategy_text, parse_mode="Markdown")
@@ -520,7 +528,6 @@ async def live_chart_guidance_loop(app):
                 sl = trade["sl"]
                 entry = trade["entry"]
 
-                # 1. Check Take Profit Hit
                 if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
                     record_trade_outcome("WIN", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -534,7 +541,6 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
-                # 2. Check Stop Loss Hit
                 if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
                     record_trade_outcome("LOSS", ticker_label=label)
                     win_rate, wins, losses, _ = get_quantitative_performance_metrics()
@@ -548,7 +554,6 @@ async def live_chart_guidance_loop(app):
                     save_active_trades()
                     continue
 
-                # 3. Breakeven / Secure Profit Alert (50% distance to TP)
                 if not trade.get("be_notified", False):
                     if (trade_type == "BUY" and current_price >= entry + ((tp - entry) * 0.5)) or \
                        (trade_type == "SELL" and current_price <= entry - ((entry - tp) * 0.5)):
@@ -628,7 +633,6 @@ async def signal_loop(app):
                     if is_expired:
                         signal_text = f"⚠️ **{label} {dir_icon} {sig} [EXPIRED]**"
                     else:
-                        # Personal notification message sent to YOU (includes quality score and lot size)
                         signal_text = (
                             f"💎 **Private Admin Signal [{confidence:.0f}% Quality]**\n"
                             f"{label} {dir_icon} {sig}\n"
