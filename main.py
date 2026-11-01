@@ -143,10 +143,9 @@ def is_prime_trading_session(ticker):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     
-    # Weekend handling: allow only if extreme high probability checks pass
     if weekday >= 5:
         if ticker == "BTC-USD":
-            return True # Allowed on weekends with 99%+ strict rule
+            return True 
         return False
         
     if 7 <= now_utc.hour < 21:
@@ -229,7 +228,6 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
         
-        # Bollinger Bands for chop and fake breakout detection
         indicator_bb = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
         df['bb_width'] = (indicator_bb.bollinger_hband() - indicator_bb.bollinger_lband()) / close_series
 
@@ -261,34 +259,29 @@ def get_h1_trend_bias(ticker):
 
 # --- STRICT PRO-GRADE 96% - 99% SETUP QUALITY CONFIDENCE FILTER ---
 def calculate_setup_confidence(h1_bias, separation, rsi, atr, bb_width, is_weekend):
-    """Enforce extreme strictness: 96%+ quality required, filtering chop, fake breakouts, and low liquidity."""
     score = 80.0  
 
-    # Factor 1: Clean institutional trend separation
     if separation > 0.0015:
         score += 8.0
     elif separation < 0.0005:
-        return 0.0 # Chop filter: Reject sideways or weak markets
+        return 0.0 
 
-    # Factor 2: Pristine RSI momentum alignment
     if 48 <= rsi <= 52 or 46 <= rsi <= 54:
         score += 8.0
     elif rsi > 65 or rsi < 35:
         score += 4.0
     else:
-        return 0.0 # Filter out ambiguous mid-range momentum chop
+        return 0.0 
 
-    # Factor 3: Volatility & Bollinger Band width check (Avoid dead / fake breakout zones)
     if bb_width is not None and bb_width > 0.002:
         score += 4.0
     else:
-        return 0.0 # Low liquidity / tight consolidation filter
+        return 0.0 
 
-    # Weekend strict multiplier (Must achieve 99% rating for weekends)
     if is_weekend:
         if score >= 95.0:
             return 99.0
-        return 0.0 # Suppress low-conviction weekend trades entirely
+        return 0.0 
 
     return min(score, 99.0)
 
@@ -329,7 +322,6 @@ def get_strategy_signal(ticker):
         if not sig:
             return None, None, None, None, None, None, None, None, 0.0
 
-        # Enforce strict 96%+ quality threshold (and 99% for weekends)
         confidence_score = calculate_setup_confidence(h1_bias, separation, rsi, atr, bb_width, is_weekend)
         required_threshold = 99.0 if is_weekend else 96.0
 
@@ -347,7 +339,6 @@ def get_strategy_signal(ticker):
                 tp = round(entry - (atr * 2.5), 4)
             sl_distance = abs(entry - sl)
         else:
-            # STRICT BROKER-COMPLIANT BTCUSD BUFFER (Enforces minimum $300 / 30,000 points away)
             entry = round(close_p, 2)
             btc_buffer = max(atr * 1.5, 300.0) 
             if sig == "BUY":
@@ -372,13 +363,25 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.data == "post_to_channel":
         original_text = query.message.text
         try:
+            # Parse out ONLY the clean essential lines for the public channel: Asset, Buy/Sell, Entry, SL, TP
+            lines = original_text.split('\n')
+            clean_channel_lines = []
+            for line in lines:
+                # Keep lines matching asset/direction, entry, sl, tp
+                if any(k in line for k in ["BUY", "SELL", "Entry:", "SL:", "TP:"]) and "Quality" not in line and "Lot" not in line:
+                    clean_channel_lines.append(line)
+            
+            channel_payload = "\n".join(clean_channel_lines)
+            if not channel_payload:
+                channel_payload = original_text # Fallback
+
             await context.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID, 
-                text=original_text, 
+                text=channel_payload, 
                 parse_mode="Markdown"
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ **Published to Channel.**", parse_mode="Markdown")
+            await query.message.reply_text("✅ **Published clean signal to Channel.**", parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Channel post error: {e}")
             await query.message.reply_text(f"❌ Failed: {e}", parse_mode="Markdown")
@@ -467,10 +470,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategy_text = (
-        "📈 **Framework Overview**\n\n"
-        "• **Discipline:** Absolute precision, zero guessing.\n"
-        "• **Quality Filter:** 96%+ requirement (99% on weekends).\n"
-        "• **Risk Control:** Strict risk management and strict market filtering."
+        "📈 **Trading Strategy & Methodology**\n\n"
+        "• **Core Strategy:** Multi-Timeframe Trend-Pullback system.\n"
+        "• **Timeframes:** Macro trend analysis on 1-Hour (H1) charts, precision execution on 15-Minute (M15) charts.\n"
+        "• **Support & Resistance:** Aligns entries with key structural support/resistance zones and institutional EMA alignments (50 & 200 EMA).\n"
+        "• **Pullback Mechanics:** Trades pullbacks into the 20 EMA combined with RSI momentum confirmation.\n"
+        "• **Risk Management:** Strict 1% risk per trade with structural ATR Stop Losses and optimized Risk-to-Reward ratios."
     )
     await update.message.reply_text(strategy_text, parse_mode="Markdown")
 
@@ -623,14 +628,14 @@ async def signal_loop(app):
                     if is_expired:
                         signal_text = f"⚠️ **{label} {dir_icon} {sig} [EXPIRED]**"
                     else:
-                        # Clean channel-ready professional message format (No bot titles, pure mentor style)
+                        # Personal notification message sent to YOU (includes quality score and lot size)
                         signal_text = (
+                            f"💎 **Private Admin Signal [{confidence:.0f}% Quality]**\n"
                             f"{label} {dir_icon} {sig}\n"
-                            f"Quality: `{confidence:.0f}%`\n"
                             f"Entry: `{entry}`\n"
-                            f"Recommended SL: `{sl}`\n"
-                            f"Recommended TP: `{tp}`\n\n"
-                            f"_Note: SL and TP are recommendations, feel free to manage your risk. Always risk only what you can afford to lose._"
+                            f"SL: `{sl}`\n"
+                            f"TP: `{tp}`\n"
+                            f"Rec Lot Size: `{rec_lot}`"
                         )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
