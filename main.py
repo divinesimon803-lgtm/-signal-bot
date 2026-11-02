@@ -112,15 +112,23 @@ def save_active_trades():
 
 load_data_from_disk()
 
-def record_trade_outcome(outcome, ticker_label=None):
-    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent
+def record_trade_outcome(outcome, pnl_amount=0.0, ticker_label=None):
+    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent, current_account_balance
     now_date = datetime.datetime.now(datetime.timezone.utc).date()
     if now_date != today_date:
         today_date = now_date
         daily_losses_count = 0
         daily_loss_limit_alert_sent = False
 
-    trade_history.append(outcome)
+    trade_record = {
+        "outcome": outcome,
+        "pnl": pnl_amount,
+        "ticker": ticker_label,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+    }
+    trade_history.append(trade_record)
+    
+    current_account_balance += pnl_amount
     if outcome == "LOSS":
         daily_losses_count += 1
 
@@ -131,24 +139,26 @@ def get_quantitative_performance_metrics():
     if total_trades == 0:
         return 0.0, 0, 0, 0.0
     
-    wins = trade_history.count("WIN")
-    losses = trade_history.count("LOSS")
+    wins = sum(1 for t in trade_history if t.get("outcome") == "WIN")
+    losses = sum(1 for t in trade_history if t.get("outcome") == "LOSS")
     win_rate = (wins / total_trades) * 100.0
-    profit_factor = (wins / losses) if losses > 0 else float(wins)
+
+    gross_profit = sum(t.get("pnl", 0.0) for t in trade_history if t.get("pnl", 0.0) > 0)
+    gross_loss = abs(sum(t.get("pnl", 0.0) for t in trade_history if t.get("pnl", 0.0) < 0))
+    
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
     return win_rate, wins, losses, profit_factor
 
-# --- INSTITUTIONAL SESSION FILTER (SESSION DISCIPLINE) ---
+# --- INSTITUTIONAL SESSION FILTER ---
 def is_prime_trading_session(ticker):
-    """Enforce strict session hours and block dead late-night hours (00:00 to 06:00 UTC) to prevent chop."""
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     weekday = now_utc.weekday()
     
-    # Block dead Asian late-night hours where crypto and forex chop aimlessly
     if 0 <= now_utc.hour < 6:
         return False
 
     if weekday >= 5:
-        if ticker == "BTC-USD" and (10 <= now_utc.hour <= 18): # Only allow active weekend hours
+        if ticker == "BTC-USD" and (10 <= now_utc.hour <= 18):
             return True 
         return False
         
@@ -181,30 +191,37 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- MATHEMATICALLY TRUE RISK-BASED LOT CALCULATION ---
+# --- STRICT BROKER-AWARE RISK-COMPLIANT POSITION SIZING ---
 def calculate_dynamic_lot(ticker, sl_distance):
     global current_account_balance
     risk_dollar_amount = current_account_balance * RISK_PER_TRADE_PCT
     
     if sl_distance <= 0:
-        return 0.01
+        return None
 
     if ticker == "BTC-USD":
-        pip_value = 1.0
-        risk_per_lot = sl_distance * pip_value
+        risk_per_lot = sl_distance * 1.0
     else:
-        pip_value = 0.1 
         sl_pips = sl_distance * 10000
-        risk_per_lot = sl_pips * pip_value
+        risk_per_lot = sl_pips * 10.0
 
     if risk_per_lot <= 0:
-        return 0.01
+        return None
 
     calculated_lot = risk_dollar_amount / risk_per_lot
-    final_lot = round(calculated_lot, 2)
-    return max(0.01, min(final_lot, 0.05))
+    min_lot = 0.01
 
-# --- BULLETPROOF DATA FETCHER WITH TIMEOUT PROTECTION ---
+    # Strict compliance: Reject trade if minimum broker size (0.01) exceeds permitted risk threshold parameters natively
+    if calculated_lot < min_lot:
+        max_allowed_risk_with_min_lot = risk_per_lot * min_lot
+        if max_allowed_risk_with_min_lot > (risk_dollar_amount * 1.5):
+            # Exceeds acceptable tolerance bounds for a 1% risk profile
+            return None
+        return min_lot
+        
+    return round(calculated_lot, 2)
+
+# --- BULLETPROOF DATA FETCHER ---
 def fetch_data(ticker, interval, period="5d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False, timeout=15)
@@ -231,11 +248,10 @@ def fetch_data(ticker, interval, period="5d"):
         df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
         df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
         df['rsi14'] = ta.momentum.rsi(close_series, window=14)
-        
-        # ADX for Trend Strength (Absolute filter against chop markets)
         df['adx14'] = ta.trend.adx(high_series, low_series, close_series, window=14)
+        df['adx_pos'] = ta.trend.adx_pos(high_series, low_series, close_series, window=14)
+        df['adx_neg'] = ta.trend.adx_neg(high_series, low_series, close_series, window=14)
 
-        # Bollinger Bands for volatility expansion check
         indicator_bb = ta.volatility.BollingerBands(close_series, window=20, window_dev=2)
         df['bb_width'] = (indicator_bb.bollinger_hband() - indicator_bb.bollinger_lband()) / close_series
 
@@ -257,7 +273,6 @@ def get_h1_trend_bias(ticker):
 
         separation = abs(latest_ema50 - latest_ema200) / latest_close
 
-        # Strict institutional filter: If ADX is below 22, market is chopping. Reject immediately.
         if latest_adx < 22.0:
             return "NEUTRAL", 0.0
 
@@ -270,26 +285,26 @@ def get_h1_trend_bias(ticker):
         logging.error(f"H1 Trend Bias error for {ticker}: {e}")
         return "NEUTRAL", 0.0
 
-# --- ELITE ADX-POWERED CHOP-FREE CONFIDENCE FILTER ---
-def calculate_setup_confidence(h1_bias, separation, rsi, adx, bb_width, is_weekend):
-    """Zero tolerance for chop. Requires high ADX trend strength and expanding volatility."""
-    score = 82.0  
+def calculate_setup_quality_score(h1_bias, separation, rsi, adx, plus_di, minus_di, is_weekend):
+    score = 70.0  
 
-    # Strict ADX Check: Must be trending strongly (ADX > 25)
     if adx > 30.0:
-        score += 10.0
+        score += 15.0
     elif adx >= 25.0:
-        score += 6.0
+        score += 10.0
     else:
-        return 0.0 # Reject choppy markets completely
+        return 0.0 
 
-    # Trend Separation
+    if h1_bias == "BULLISH" and plus_di <= minus_di:
+        return 0.0
+    if h1_bias == "BEARISH" and minus_di <= plus_di:
+        return 0.0
+
     if separation > 0.002:
-        score += 4.0
+        score += 10.0
 
-    # RSI Momentum Check
     if 45 <= rsi <= 55:
-        score += 4.0
+        score += 5.0
     else:
         return 0.0
 
@@ -319,6 +334,8 @@ def get_strategy_signal(ticker):
         rsi = float(c['rsi14'])
         atr = float(c['atr14'])
         adx = float(c['adx14'])
+        plus_di = float(c['adx_pos']) if 'adx_pos' in c and pd.notna(c['adx_pos']) else 0.0
+        minus_di = float(c['adx_neg']) if 'adx_neg' in c and pd.notna(c['adx_neg']) else 0.0
         bb_width = float(c['bb_width']) if 'bb_width' in c and pd.notna(c['bb_width']) else 0.005
         candle_time = pd.to_datetime(df_m15.index[-2])
 
@@ -333,11 +350,10 @@ def get_strategy_signal(ticker):
         if not sig:
             return None, None, None, None, None, None, None, None, 0.0
 
-        confidence_score = calculate_setup_confidence(h1_bias, separation, rsi, adx, bb_width, is_weekend)
-        required_threshold = 95.0
+        quality_score = calculate_setup_quality_score(h1_bias, separation, rsi, adx, plus_di, minus_di, is_weekend)
+        required_threshold = 85.0
 
-        if confidence_score < required_threshold:
-            logging.info(f"Filtered out {ticker}: Chop detected or quality {confidence_score:.1f}% below threshold.")
+        if quality_score < required_threshold:
             return None, None, None, None, None, None, None, None, 0.0
 
         if ticker == "EURUSD=X":
@@ -351,7 +367,7 @@ def get_strategy_signal(ticker):
             sl_distance = abs(entry - sl)
         else:
             entry = round(close_p, 2)
-            btc_buffer = max(atr * 1.5, 350.0) # Enhanced buffer for crypto volatility
+            btc_buffer = max(atr * 1.5, 350.0) 
             if sig == "BUY":
                 sl = round(entry - btc_buffer, 2)
                 tp = round(entry + (btc_buffer * 2.2), 2)
@@ -361,7 +377,10 @@ def get_strategy_signal(ticker):
             sl_distance = abs(entry - sl)
 
         rec_lot = calculate_dynamic_lot(ticker, sl_distance)
-        return sig, entry, sl, tp, rec_lot, rsi, f"{ticker} Trend-Pullback", candle_time, confidence_score
+        if rec_lot is None:
+            return None, None, None, None, None, None, None, None, 0.0
+
+        return sig, entry, sl, tp, rec_lot, rsi, f"{ticker} Trend-Pullback", candle_time, quality_score
     except Exception as e:
         logging.error(f"Strategy signal error for {ticker}: {e}")
         return None, None, None, None, None, None, None, None, 0.0
@@ -375,14 +394,9 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         original_text = query.message.text
         try:
             lines = original_text.split('\n')
-            clean_channel_lines = []
-            for line in lines:
-                if any(k in line for k in ["BUY", "SELL", "Entry:", "SL:", "TP:"]) and "Quality" not in line and "Lot" not in line:
-                    clean_channel_lines.append(line)
+            clean_channel_lines = [line for line in lines if any(k in line for k in ["BUY", "SELL", "Entry:", "SL:", "TP:"]) and "Quality" not in line and "Lot" not in line]
             
-            channel_payload = "\n".join(clean_channel_lines)
-            if not channel_payload:
-                channel_payload = original_text
+            channel_payload = "\n".join(clean_channel_lines) if clean_channel_lines else original_text
 
             await context.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID, 
@@ -402,7 +416,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Anti-Chop Mentor Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure trending momentum only. Zero chop.", 
+            f"🔓 **Anti-Chop Mentor Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Validated momentum structures only.", 
             parse_mode="Markdown"
         )
     else:
@@ -420,7 +434,7 @@ async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     bot_active = True
-    await update.message.reply_text("☀️ **Online.** Scanning for high-ADX trending setups.", parse_mode="Markdown")
+    await update.message.reply_text("☀️ **Online.** Scanning for validated trends.", parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global active_trades, last_signal_timestamps
@@ -428,18 +442,22 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     args = context.args
-    if args and args[0].upper() in ["WIN", "LOSS"]:
+    if args and len(args) >= 2 and args[0].upper() in ["WIN", "LOSS"]:
         outcome = args[0].upper()
-        record_trade_outcome(outcome)
-        active_trades.clear()
-        save_active_trades()
-        last_signal_timestamps.clear()
-        await update.message.reply_text(f"🧹 **Recorded:** `{outcome}`. Stay sharp.", parse_mode="Markdown")
+        try:
+            pnl_val = float(args[1])
+            record_trade_outcome(outcome, pnl_amount=pnl_val)
+            active_trades.clear()
+            save_active_trades()
+            last_signal_timestamps.clear()
+            await update.message.reply_text(f"🧹 **Recorded:** `{outcome}` with PnL: `${pnl_val:.2f}`.", parse_mode="Markdown")
+        except ValueError:
+            await update.message.reply_text("⚠️ Usage format: `/clear WIN 0.50` or `/clear LOSS -0.10`", parse_mode="Markdown")
     else:
         active_trades.clear()
         save_active_trades()
         last_signal_timestamps.clear()
-        await update.message.reply_text("🧹 **Active Trades Reset.**", parse_mode="Markdown")
+        await update.message.reply_text("🧹 **Active Trades Reset.** (Tip: use `/clear WIN [pnl]` to log properly)", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -460,17 +478,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     
-    state = "Active & Anti-Chop" if bot_active else "Offline"
+    state = "Active & Validating" if bot_active else "Offline"
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     text = (
         f"📊 **Mentor Status:** `{state}`\n"
         f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
-        f"• Profit Factor: `{profit_factor:.2f}`\n"
+        f"• Profit Factor (Gross P&L): `{profit_factor:.2f}`\n"
         f"• Balance: `${current_account_balance:.2f}`\n"
     )
 
     if not active_trades:
-        text += "No active positions. Waiting for true trend alignment."
+        text += "No active positions. Waiting for high-quality setups."
     else:
         for label, trade in active_trades.items():
             text += f"\n📌 **{label} ({trade['type']})**\n• Entry: `{trade['entry']}`\n• SL: `{trade['sl']}` | TP: `{trade['tp']}`"
@@ -480,14 +498,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     strategy_text = (
         "📈 **Trading Strategy & Methodology**\n\n"
-        "• **Core Strategy:** Multi-Timeframe Trend-Pullback system with ADX Trend Filtering.\n"
-        "• **Timeframes:** Macro trend analysis on 1-Hour (H1) charts, precision execution on 15-Minute (M15) charts.\n"
-        "• **Chop Filter:** Zero tolerance for sideways markets. Requires ADX > 25 to guarantee momentum.\n"
-        "• **Risk Management:** Strict 1% risk per trade with structural ATR Stop Losses and optimized Risk-to-Reward ratios."
+        "• **Core Strategy:** Multi-Timeframe Trend-Pullback system with directional DI & ADX filtering.\n"
+        "• **Timeframes:** Macro analysis on 1-Hour (H1), precision execution on 15-Minute (M15).\n"
+        "• **Validation:** Strict structural filters and maximum 1% broker-aware risk sizing."
     )
     await update.message.reply_text(strategy_text, parse_mode="Markdown")
 
-# --- PRO MENTOR GUIDANCE LOOP ---
+# --- BACKGROUND LOOPS ---
 async def hourly_heartbeat_loop(app):
     while True:
         try:
@@ -499,7 +516,7 @@ async def hourly_heartbeat_loop(app):
                 win_rate, wins, losses, pf = get_quantitative_performance_metrics()
                 await app.bot.send_message(
                     chat_id=target_user, 
-                    text=f"🟢 **Mentor Note:** Trust the process. `{win_rate:.1f}%` win rate ({wins}W/{losses}L, PF: `{pf:.2f}`). Consistency wins.", 
+                    text=f"🟢 **Mentor Note:** `{win_rate:.1f}%` win rate ({wins}W/{losses}L, PF: `{pf:.2f}`).", 
                     parse_mode="Markdown"
                 )
         except Exception as e:
@@ -522,49 +539,71 @@ async def live_chart_guidance_loop(app):
                 if df_live is None or len(df_live) < 5:
                     continue
 
-                current_price = float(df_live['Close'].iloc[-1])
+                # Intra-candle extremes check for realistic SL/TP touching
+                candle = df_live.iloc[-2]
+                high_price = float(candle['High'])
+                low_price = float(candle['Low'])
                 trade_type = trade["type"]
                 tp = trade["tp"]
                 sl = trade["sl"]
                 entry = trade["entry"]
 
-                if (trade_type == "BUY" and current_price >= tp) or (trade_type == "SELL" and current_price <= tp):
-                    record_trade_outcome("WIN", ticker_label=label)
-                    win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                    if target_user and authorized_users:
-                        await app.bot.send_message(
-                            chat_id=target_user, 
-                            text=f"🎯 **Target Secured ({label})**\n• Record: `{wins}W/{losses}L` (`{win_rate:.1f}%`)", 
-                            parse_mode="Markdown"
-                        )
-                    active_trades.pop(label, None)
-                    save_active_trades()
-                    continue
-
-                if (trade_type == "BUY" and current_price <= sl) or (trade_type == "SELL" and current_price >= sl):
-                    record_trade_outcome("LOSS", ticker_label=label)
-                    win_rate, wins, losses, _ = get_quantitative_performance_metrics()
-                    if target_user and authorized_users:
-                        await app.bot.send_message(
-                            chat_id=target_user, 
-                            text=f"🛑 **SL Hit ({label})**\n• *Mentor Note:* Losses are business expenses. Stick to the plan.", 
-                            parse_mode="Markdown"
-                        )
-                    active_trades.pop(label, None)
-                    save_active_trades()
-                    continue
-
-                if not trade.get("be_notified", False):
-                    if (trade_type == "BUY" and current_price >= entry + ((tp - entry) * 0.5)) or \
-                       (trade_type == "SELL" and current_price <= entry - ((entry - tp) * 0.5)):
-                        trade["be_notified"] = True
+                if trade_type == "BUY":
+                    hit_tp = high_price >= tp
+                    hit_sl = low_price <= sl
+                    if hit_tp and hit_sl:
+                        # Ambiguous intra-candle cross, conservatively count as loss or review
+                        actual_pnl = -abs(entry - sl) * 0.1 * 10
+                        record_trade_outcome("LOSS", pnl_amount=actual_pnl, ticker_label=label)
+                        active_trades.pop(label, None)
                         save_active_trades()
+                        continue
+                    elif hit_tp:
+                        actual_pnl = abs(tp - entry) * 0.1 * 10
+                        record_trade_outcome("WIN", pnl_amount=actual_pnl, ticker_label=label)
+                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
                         if target_user and authorized_users:
-                            await app.bot.send_message(
-                                chat_id=target_user,
-                                text=f"🛡️ **Risk-Free Management: {label}**\n• Price halfway to target.\n• *Action:* Move SL to entry (`{entry}`). Protect capital.",
-                                parse_mode="Markdown"
-                            )
+                            await app.bot.send_message(chat_id=target_user, text=f"🎯 **Target Secured ({label})**\n• Record: `{wins}W/{losses}L`", parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        save_active_trades()
+                        continue
+                    elif hit_sl:
+                        actual_pnl = -abs(entry - sl) * 0.1 * 10
+                        record_trade_outcome("LOSS", pnl_amount=actual_pnl, ticker_label=label)
+                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                        if target_user and authorized_users:
+                            await app.bot.send_message(chat_id=target_user, text=f"🛑 **SL Hit ({label})**", parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        save_active_trades()
+                        continue
+
+                elif trade_type == "SELL":
+                    hit_tp = low_price <= tp
+                    hit_sl = high_price >= sl
+                    if hit_tp and hit_sl:
+                        actual_pnl = -abs(sl - entry) * 0.1 * 10
+                        record_trade_outcome("LOSS", pnl_amount=actual_pnl, ticker_label=label)
+                        active_trades.pop(label, None)
+                        save_active_trades()
+                        continue
+                    elif hit_tp:
+                        actual_pnl = abs(entry - tp) * 0.1 * 10
+                        record_trade_outcome("WIN", pnl_amount=actual_pnl, ticker_label=label)
+                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                        if target_user and authorized_users:
+                            await app.bot.send_message(chat_id=target_user, text=f"🎯 **Target Secured ({label})**\n• Record: `{wins}W/{losses}L`", parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        save_active_trades()
+                        continue
+                    elif hit_sl:
+                        actual_pnl = -abs(sl - entry) * 0.1 * 10
+                        record_trade_outcome("LOSS", pnl_amount=actual_pnl, ticker_label=label)
+                        win_rate, wins, losses, _ = get_quantitative_performance_metrics()
+                        if target_user and authorized_users:
+                            await app.bot.send_message(chat_id=target_user, text=f"🛑 **SL Hit ({label})**", parse_mode="Markdown")
+                        active_trades.pop(label, None)
+                        save_active_trades()
+                        continue
 
         except Exception as e:
             logging.error(f"Guidance error: {e}")
@@ -595,7 +634,7 @@ async def signal_loop(app):
                     if target_user and authorized_users:
                         await app.bot.send_message(
                             chat_id=target_user,
-                            text=f"🛑 **Circuit Breaker:** Daily loss limit ({MAX_DAILY_LOSSES}) reached. Preserving capital. Pausing for today.",
+                            text=f"🛑 **Circuit Breaker:** Daily loss limit ({MAX_DAILY_LOSSES}) reached. Pausing for today.",
                             parse_mode="Markdown"
                         )
                 await asyncio.sleep(60)
@@ -610,7 +649,7 @@ async def signal_loop(app):
                 if not is_prime_trading_session(ticker):
                     continue
 
-                sig, entry, sl, tp, rec_lot, rsi, strategy_name, candle_time, confidence = get_strategy_signal(ticker)
+                sig, entry, sl, tp, rec_lot, rsi, strategy_name, candle_time, quality_score = get_strategy_signal(ticker)
                 if sig is None:
                     continue
 
@@ -626,21 +665,20 @@ async def signal_loop(app):
                             candle_time = candle_time.tz_localize("UTC")
                         else:
                             candle_time = candle_time.tz_convert("UTC")
-                        
                         if (now_utc - candle_time).total_seconds() > 1800:
                             is_expired = True
 
                     if is_expired:
-                        signal_text = f"⚠️ **{label} {dir_icon} {sig} [EXPIRED]**"
-                    else:
-                        signal_text = (
-                            f"💎 **Private Admin Signal [{confidence:.0f}% Quality]**\n"
-                            f"{label} {dir_icon} {sig}\n"
-                            f"Entry: `{entry}`\n"
-                            f"SL: `{sl}`\n"
-                            f"TP: `{tp}`\n"
-                            f"Rec Lot Size: `{rec_lot}`"
-                        )
+                        continue  
+
+                    signal_text = (
+                        f"💎 **Validated Signal [Quality Score: {quality_score:.0f}]**\n"
+                        f"{label} {dir_icon} {sig}\n"
+                        f"Entry: `{entry}`\n"
+                        f"SL: `{sl}`\n"
+                        f"TP: `{tp}`\n"
+                        f"Rec Lot Size: `{rec_lot}`"
+                    )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
 
@@ -652,17 +690,15 @@ async def signal_loop(app):
                             reply_markup=keyboard
                         )
 
-                    if not is_expired:
-                        active_trades[label] = {
-                            "type": sig,
-                            "entry": entry,
-                            "sl": sl,
-                            "tp": tp,
-                            "be_notified": False,
-                            "reversal_warned": False,
-                            "timestamp": str(datetime.datetime.now(datetime.timezone.utc))
-                        }
-                        save_active_trades()
+                    active_trades[label] = {
+                        "type": sig,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp,
+                        "be_notified": False,
+                        "timestamp": str(datetime.datetime.now(datetime.timezone.utc))
+                    }
+                    save_active_trades()
         except Exception as e:
             logging.error(f"Signal loop error: {e}")
             await asyncio.sleep(10)
