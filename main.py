@@ -27,25 +27,27 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", TELEGRAM_CHAT_ID)
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
     raise ValueError("CRITICAL SECURITY ERROR: Missing required environment variables.")
 
-RISK_PER_TRADE_PCT = 0.01  # Strict 1% risk profile per trade
+RISK_PER_TRADE_PCT = 0.01  # Strict 1% risk profile per trade (Jim Simons math sizing)
 
 # --- ACCOUNT BALANCE & STATE MANAGEMENT ---
-current_account_balance = 10.00  
+current_account_balance = 20.00  # Starting base capital ($20)
 bot_active = True  
 
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
-daily_losses_count = 0
-daily_loss_limit_alert_sent = False
-MAX_DAILY_LOSSES = 3  
 
-# --- ASSET UNIVERSE ---
+# --- ASSET UNIVERSE (The 6 Core Pairs) ---
 WEEKDAY_ASSETS = {
-    "EURUSD=X": "EURUSD",    
-    "BTC-USD": "BTCUSD"  
+    "BTC-USD": "BTCUSD",
+    "EURUSD=X": "EURUSD",
+    "GBPUSD=X": "GBPUSD",
+    "JPY=X": "USDJPY",
+    "GC=F": "XAUUSD",
+    "ETH-USD": "ETHUSD"
 }
 
 WEEKEND_ASSETS = {
-    "BTC-USD": "BTCUSD"  
+    "BTC-USD": "BTCUSD",
+    "ETH-USD": "ETHUSD"
 }
 
 TIMEFRAME_M15 = "15m"
@@ -62,22 +64,14 @@ trade_history = []
 active_signals = {}  
 
 def load_data_from_disk():
-    global trade_history, active_signals, current_account_balance, daily_losses_count, today_date
+    global trade_history, active_signals, current_account_balance, today_date
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     trade_history = data.get("history", [])
-                    current_account_balance = float(data.get("balance", 10.00))
-                    daily_losses_count = int(data.get("daily_losses", 0))
-                    saved_date = data.get("date")
-                    if saved_date:
-                        parsed_date = datetime.datetime.fromisoformat(saved_date).date()
-                        if parsed_date == datetime.datetime.now(datetime.timezone.utc).date():
-                            today_date = parsed_date
-                        else:
-                            daily_losses_count = 0
+                    current_account_balance = float(data.get("balance", 20.00))
         except Exception as e:
             logging.error(f"Error loading history: {e}")
             trade_history = []
@@ -95,7 +89,6 @@ def save_trade_history():
         data = {
             "history": trade_history,
             "balance": current_account_balance,
-            "daily_losses": daily_losses_count,
             "date": today_date.isoformat()
         }
         with open(HISTORY_FILE, "w") as f:
@@ -103,22 +96,13 @@ def save_trade_history():
     except Exception as e:
         logging.error(f"Error saving history: {e}")
 
-def save_active_signals():
-    try:
-        with open(TRADES_FILE, "w") as f:
-            json.dump(active_signals, f)
-    except Exception as e:
-        logging.error(f"Error saving active signals: {e}")
-
 load_data_from_disk()
 
 def record_trade_outcome(outcome, pnl_amount=0.0, ticker_label=None):
-    global trade_history, today_date, daily_losses_count, daily_loss_limit_alert_sent, current_account_balance
+    global trade_history, today_date, current_account_balance
     now_date = datetime.datetime.now(datetime.timezone.utc).date()
     if now_date != today_date:
         today_date = now_date
-        daily_losses_count = 0
-        daily_loss_limit_alert_sent = False
 
     trade_record = {
         "outcome": outcome,
@@ -127,11 +111,7 @@ def record_trade_outcome(outcome, pnl_amount=0.0, ticker_label=None):
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
     }
     trade_history.append(trade_record)
-    
     current_account_balance += pnl_amount
-    if outcome == "LOSS":
-        daily_losses_count += 1
-
     save_trade_history()
 
 def get_quantitative_performance_metrics():
@@ -149,27 +129,7 @@ def get_quantitative_performance_metrics():
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
     return win_rate, wins, losses, profit_factor
 
-# --- SESSION FILTER ---
-def is_prime_trading_session(ticker):
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    weekday = now_utc.weekday()
-    
-    if 0 <= now_utc.hour < 6:
-        return False
-
-    if weekday >= 5:
-        if ticker == "BTC-USD" and (10 <= now_utc.hour <= 18):
-            return True 
-        return False
-        
-    if 7 <= now_utc.hour < 21:
-        return True
-        
-    return False
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- FLASK WEB SERVER ---
+# --- FLASK WEB SERVER FOR 24/7 HOSTING ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -191,7 +151,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
-# --- RISK-COMPLIANT POSITION SIZING ---
+# --- MATHEMATICAL POSITION SIZING (1% Risk) ---
 def calculate_dynamic_lot(ticker, sl_distance):
     global current_account_balance
     risk_dollar_amount = current_account_balance * RISK_PER_TRADE_PCT
@@ -199,7 +159,7 @@ def calculate_dynamic_lot(ticker, sl_distance):
     if sl_distance <= 0:
         return None
 
-    if ticker == "BTC-USD":
+    if "USD" in ticker and "EUR" not in ticker and "GBP" not in ticker:
         risk_per_lot = sl_distance * 1.0
     else:
         sl_pips = sl_distance * 10000
@@ -216,7 +176,7 @@ def calculate_dynamic_lot(ticker, sl_distance):
         
     return round(calculated_lot, 2)
 
-# --- BULLETPROOF DATA FETCHER ---
+# --- PURE MATHEMATICAL DATA FETCHER & INDICATORS ---
 def fetch_data(ticker, interval, period="60d"):
     try:
         df = yf.download(tickers=ticker, period=period, interval=interval, progress=False, timeout=15)
@@ -238,142 +198,75 @@ def fetch_data(ticker, interval, period="60d"):
         if len(close_series.dropna()) < 200:
             return None
 
+        # Pure Statistical & Volatility Metrics
         df['atr14'] = ta.volatility.average_true_range(high_series, low_series, close_series, window=14)
-        df['ema20'] = ta.trend.ema_indicator(close_series, window=20)
-        df['ema50'] = ta.trend.ema_indicator(close_series, window=50)
-        df['ema200'] = ta.trend.ema_indicator(close_series, window=200)
-        df['rsi14'] = ta.momentum.rsi(close_series, window=14)
-        df['adx14'] = ta.trend.adx(high_series, low_series, close_series, window=14)
-        df['adx_pos'] = ta.trend.adx_pos(high_series, low_series, close_series, window=14)
-        df['adx_neg'] = ta.trend.adx_neg(high_series, low_series, close_series, window=14)
+        df['sma50'] = ta.trend.sma_indicator(close_series, window=50)
+        df['sma200'] = ta.trend.sma_indicator(close_series, window=200)
+        
+        # Rolling Z-Score Calculation (Statistical Mean Reversion Math)
+        rolling_mean = close_series.rolling(window=50).mean()
+        rolling_std = close_series.rolling(window=50).std()
+        df['z_score'] = (close_series - rolling_mean) / rolling_std
 
         return df
     except Exception as e:
-        logging.error(f"Protected data fetch error for {ticker}: {e}")
+        logging.error(f"Mathematical fetch error for {ticker}: {e}")
         return None
 
-def get_h1_trend_bias(ticker):
-    try:
-        df_h1 = fetch_data(ticker, interval=TIMEFRAME_H1, period="60d")
-        if df_h1 is None or len(df_h1) < 200:
-            return "NEUTRAL", 0.0
-        
-        latest_close = float(df_h1['Close'].iloc[-2])
-        latest_ema50 = float(df_h1['ema50'].iloc[-2]) if pd.notna(df_h1['ema50'].iloc[-2]) else latest_close
-        latest_ema200 = float(df_h1['ema200'].iloc[-2]) if pd.notna(df_h1['ema200'].iloc[-2]) else latest_close
-        latest_adx = float(df_h1['adx14'].iloc[-2]) if 'adx14' in df_h1 and pd.notna(df_h1['adx14'].iloc[-2]) else 25.0
-
-        separation = abs(latest_ema50 - latest_ema200) / latest_close
-
-        if latest_adx < 20.0:
-            return "NEUTRAL", 0.0
-
-        if latest_close > latest_ema50 and latest_ema50 > latest_ema200:
-            return "BULLISH", separation
-        elif latest_close < latest_ema50 and latest_ema50 < latest_ema200:
-            return "BEARISH", separation
-        return "NEUTRAL", 0.0
-    except Exception as e:
-        logging.error(f"H1 Trend Bias error for {ticker}: {e}")
-        return "NEUTRAL", 0.0
-
-def calculate_setup_quality_score(h1_bias, separation, rsi, adx, plus_di, minus_di):
-    score = 70.0  
-    if adx > 25.0:
-        score += 15.0
-    elif adx >= 20.0:
-        score += 10.0
-    else:
-        return 0.0 
-
-    if h1_bias == "BULLISH" and plus_di <= minus_di:
-        return 0.0
-    if h1_bias == "BEARISH" and minus_di <= plus_di:
-        return 0.0
-
-    if separation > 0.001:
-        score += 10.0
-
-    if 45 <= rsi <= 55:
-        score += 5.0
-
-    return min(score, 99.0)
-
+# --- QUANTITATIVE SIGNAL CORE ---
 def get_strategy_signal(ticker):
     try:
-        h1_bias, separation = get_h1_trend_bias(ticker)
-        if h1_bias == "NEUTRAL":
-            return None, None, None, None, None, None, None, None, None, 0.0
+        df = fetch_data(ticker, interval=TIMEFRAME_M15, period="10d")
+        if df is None or len(df) < 50:
+            return None, None, None, None, None, None, 0.0
 
-        df_m15 = fetch_data(ticker, interval=TIMEFRAME_M15, period="10d")
-        if df_m15 is None or len(df_m15) < 50:
-            return None, None, None, None, None, None, None, None, None, 0.0
-
-        c = df_m15.iloc[-2]
-        prev_c = df_m15.iloc[-3]
-        
-        if pd.isna(c['atr14']) or pd.isna(c['rsi14']) or pd.isna(c['ema20']) or pd.isna(c['adx14']):
-            return None, None, None, None, None, None, None, None, None, 0.0
-
+        c = df.iloc[-2]
         close_p = float(c['Close'])
-        ema20 = float(c['ema20'])
-        rsi = float(c['rsi14'])
-        atr = float(c['atr14'])
-        adx = float(c['adx14'])
-        plus_di = float(c['adx_pos']) if 'adx_pos' in c and pd.notna(c['adx_pos']) else 0.0
-        minus_di = float(c['adx_neg']) if 'adx_neg' in c and pd.notna(c['adx_neg']) else 0.0
-        candle_time = pd.to_datetime(df_m15.index[-2])
+        z_score = float(c['z_score']) if pd.notna(c['z_score']) else 0.0
+        atr = float(c['atr14']) if pd.notna(c['atr14']) else 0.0
+        candle_time = pd.to_datetime(df.index[-2])
 
         sig = None
-        if h1_bias == "BULLISH":
-            if float(prev_c['Close']) <= float(prev_c['ema20']) and close_p > ema20 and rsi > 45:
-                sig = "BUY"
-        elif h1_bias == "BEARISH":
-            if float(prev_c['Close']) >= float(prev_c['ema20']) and close_p < ema20 and rsi < 55:
-                sig = "SELL"
+        # Statistical Z-Score Thresholds (> 2.0 standard deviations deviation triggers mean reversion)
+        if z_score < -2.0:
+            sig = "BUY"
+        elif z_score > 2.0:
+            sig = "SELL"
 
         if not sig:
-            return None, None, None, None, None, None, None, None, None, 0.0
+            return None, None, None, None, None, None, 0.0
 
-        quality_score = calculate_setup_quality_score(h1_bias, separation, rsi, adx, plus_di, minus_di)
-        required_threshold = 78.0  
-
-        if quality_score < required_threshold:
-            return None, None, None, None, None, None, None, None, None, 0.0
-
-        if ticker == "EURUSD=X":
+        # Dynamic Stop Loss and Take Profit based on ATR Volatility
+        if "EUR" in ticker or "GBP" in ticker or "USD" in ticker:
             entry = round(close_p, 4)
+            sl_dist = atr * 1.5
             if sig == "BUY":
-                sl = round(entry - (atr * 1.5), 4)
-                tp = round(entry + (atr * 3.0), 4) 
+                sl = round(entry - sl_dist, 4)
+                tp = round(entry + (sl_dist * 2.0), 4)
             else:
-                sl = round(entry + (atr * 1.5), 4)
-                tp = round(entry - (atr * 3.0), 4)
-            sl_distance = abs(entry - sl)
+                sl = round(entry + sl_dist, 4)
+                tp = round(entry - (sl_dist * 2.0), 4)
         else:
             entry = round(close_p, 2)
-            btc_buffer = max(atr * 1.5, 300.0) 
+            sl_dist = max(atr * 1.5, 50.0)
             if sig == "BUY":
-                sl = round(entry - btc_buffer, 2)
-                tp = round(entry + (btc_buffer * 2.0), 2)
+                sl = round(entry - sl_dist, 2)
+                tp = round(entry + (sl_dist * 2.0), 2)
             else:
-                sl = round(entry + btc_buffer, 2)
-                tp = round(entry - (btc_buffer * 2.0), 2)
-            sl_distance = abs(entry - sl)
+                sl = round(entry + sl_dist, 2)
+                tp = round(entry - (sl_dist * 2.0), 2)
 
-        # Calculate exact Break-Even Target (Halfway between Entry and TP)
-        be_target = round((entry + tp) / 2, 4 if ticker == "EURUSD=X" else 2)
-
-        rec_lot = calculate_dynamic_lot(ticker, sl_distance)
+        rec_lot = calculate_dynamic_lot(ticker, sl_dist)
         if rec_lot is None:
-            return None, None, None, None, None, None, None, None, None, 0.0
+            return None, None, None, None, None, None, 0.0
 
-        return sig, entry, sl, tp, be_target, rec_lot, rsi, f"{ticker} Trend-Pullback", candle_time, quality_score
+        quality_score = min(abs(z_score) * 35.0, 99.0)
+        return sig, entry, sl, tp, rec_lot, candle_time, quality_score
     except Exception as e:
-        logging.error(f"Strategy signal error for {ticker}: {e}")
-        return None, None, None, None, None, None, None, None, None, 0.0
+        logging.error(f"Signal calculation error for {ticker}: {e}")
+        return None, None, None, None, None, None, 0.0
 
-# --- TELEGRAM BUTTON HANDLER ---
+# --- TELEGRAM INTERACTION ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -381,163 +274,70 @@ async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.data == "post_to_channel":
         original_text = query.message.text
         try:
-            lines = original_text.split('\n')
-            clean_channel_lines = [line for line in lines if any(k in line for k in ["BUY", "SELL", "Entry:", "SL:", "TP:", "BE Target:"]) and "Quality" not in line and "Lot" not in line]
-            
-            channel_payload = "\n".join(clean_channel_lines) if clean_channel_lines else original_text
-
             await context.bot.send_message(
                 chat_id=TELEGRAM_CHANNEL_ID, 
-                text=channel_payload, 
+                text=original_text, 
                 parse_mode="Markdown"
             )
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text("✅ **Published clean signal to Channel.**", parse_mode="Markdown")
+            await query.message.reply_text("✅ **Published signal to Channel.**", parse_mode="Markdown")
         except Exception as e:
-            logging.error(f"Channel post error: {e}")
             await query.message.reply_text(f"❌ Failed: {e}", parse_mode="Markdown")
 
-# --- COMMANDS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Professional Signal Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Manual execution mode with Break-Even targets enabled.", 
+            f"🔓 **Aura Quantum Demo Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure mathematical Z-score mean reversion active.", 
             parse_mode="Markdown"
         )
     else:
         await update.message.reply_text("🔒 *Access Denied.*", parse_mode="Markdown")
 
-async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_active
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
-    bot_active = False
-    await update.message.reply_text("🌙 **Offline.** Signal generation paused.", parse_mode="Markdown")
-
-async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_active
-    if update.effective_user.id not in authorized_users:
-        return
-    bot_active = True
-    await update.message.reply_text("☀️ **Online.** Scanning for validated signals.", parse_mode="Markdown")
+    win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
+    text = (
+        f"📊 **Aura Quantum Status:** `Active`\n"
+        f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
+        f"• Profit Factor: `{profit_factor:.2f}`\n"
+        f"• Balance: `${current_account_balance:.2f}`\n"
+        f"• Circuit Breakers: `Disabled (Simons Law of Large Numbers Active)`"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_signal_timestamps
     if update.effective_user.id not in authorized_users:
         return
-    
     args = context.args
     if args and len(args) >= 2 and args[0].upper() in ["WIN", "LOSS"]:
         outcome = args[0].upper()
         try:
             pnl_val = float(args[1])
             record_trade_outcome(outcome, pnl_amount=pnl_val)
-            last_signal_timestamps.clear()
-            await update.message.reply_text(f"🧹 **Logged Manual Trade:** `{outcome}` with PnL: `${pnl_val:.2f}`.\nBalance updated to `${current_account_balance:.2f}`", parse_mode="Markdown")
+            await update.message.reply_text(f"🧹 **Logged Trade:** `{outcome}` | PnL: `${pnl_val:.2f}` | Balance: `${current_account_balance:.2f}`", parse_mode="Markdown")
         except ValueError:
-            await update.message.reply_text("⚠️ Usage format: `/clear WIN 0.50` or `/clear LOSS -0.10`", parse_mode="Markdown")
+            await update.message.reply_text("⚠️ Format: `/clear WIN 0.50`", parse_mode="Markdown")
     else:
-        await update.message.reply_text("⚠️ Usage format: `/clear WIN [pnl]` or `/clear LOSS [pnl]` to log your manual trades.", parse_mode="Markdown")
+        await update.message.reply_text("⚠️ Format: `/clear WIN [pnl]` or `/clear LOSS [pnl]`", parse_mode="Markdown")
 
-async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global current_account_balance
-    if update.effective_user.id not in authorized_users:
-        return
-    args = context.args
-    if args:
-        try:
-            current_account_balance = float(args[0])
-            save_trade_history()
-            await update.message.reply_text(f"💰 **Balance Updated:** `${current_account_balance:.2f}`", parse_mode="Markdown")
-            return
-        except ValueError:
-            pass
-    await update.message.reply_text(f"💰 **Balance:** `${current_account_balance:.2f}`", parse_mode="Markdown")
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in authorized_users:
-        return
-    
-    state = "Active & Scanning" if bot_active else "Offline"
-    win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
-    text = (
-        f"📊 **Signal Bot Status:** `{state}`\n"
-        f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
-        f"• Profit Factor: `{profit_factor:.2f}`\n"
-        f"• Balance: `${current_account_balance:.2f}`\n"
-        f"• Daily Losses: `{daily_losses_count}/{MAX_DAILY_LOSSES}`\n\n"
-        "Ready to send verified signals with Break-Even targets."
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    strategy_text = (
-        "📈 **Professional Signal Engine**\n\n"
-        "• **Core Strategy:** H1 Trend Filter + M15 Pullback Confirmation with Break-Even guidance.\n"
-        "• **Execution:** Manual entry on MT5 using exact signals provided."
-    )
-    await update.message.reply_text(strategy_text, parse_mode="Markdown")
-
-# --- BACKGROUND LOOPS ---
-async def hourly_heartbeat_loop(app):
-    while True:
-        try:
-            await asyncio.sleep(3600) 
-            if not bot_active:
-                continue
-            target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-            if target_user and authorized_users:
-                win_rate, wins, losses, pf = get_quantitative_performance_metrics()
-                await app.bot.send_message(
-                    chat_id=target_user, 
-                    text=f"🟢 **Heartbeat:** `{win_rate:.1f}%` win rate ({wins}W/{losses}L, PF: `{pf:.2f}`).", 
-                    parse_mode="Markdown"
-                )
-        except Exception as e:
-            logging.error(f"Heartbeat error: {e}")
-            await asyncio.sleep(60)
-
+# --- BACKGROUND SIGNAL LOOP ---
 async def signal_loop(app):
-    global last_signal_timestamps, today_date, daily_losses_count, daily_loss_limit_alert_sent
-
+    global last_signal_timestamps
     while True:
         try:
-            now_date = datetime.datetime.now(datetime.timezone.utc).date()
-            if now_date != today_date:
-                today_date = now_date
-                daily_losses_count = 0
-                daily_loss_limit_alert_sent = False
-                last_signal_timestamps.clear()
-                save_trade_history()
-
             if not bot_active:
                 await asyncio.sleep(10)
                 continue
 
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
-            
-            if daily_losses_count >= MAX_DAILY_LOSSES:
-                if not daily_loss_limit_alert_sent:
-                    daily_loss_limit_alert_sent = True
-                    if target_user and authorized_users:
-                        await app.bot.send_message(
-                            chat_id=target_user,
-                            text=f"🛑 **Circuit Breaker:** Daily loss limit ({MAX_DAILY_LOSSES}) reached. Pausing signals for today.",
-                            parse_mode="Markdown"
-                        )
-                await asyncio.sleep(60)
-                continue
-
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
-                if not is_prime_trading_session(ticker):
-                    continue
-
-                sig, entry, sl, tp, be_target, rec_lot, rsi, strategy_name, candle_time, quality_score = get_strategy_signal(ticker)
+                sig, entry, sl, tp, rec_lot, candle_time, quality_score = get_strategy_signal(ticker)
                 if sig is None:
                     continue
 
@@ -547,12 +347,11 @@ async def signal_loop(app):
                     dir_icon = "🟢" if sig == "BUY" else "🔴"
 
                     signal_text = (
-                        f"💎 **Verified Signal [Quality: {quality_score:.0f}]**\n"
+                        f"⚡ **Aura Quantum Signal [Score: {quality_score:.0f}]**\n"
                         f"{label} {dir_icon} {sig}\n"
                         f"Entry: `{entry}`\n"
                         f"SL: `{sl}`\n"
                         f"TP: `{tp}`\n"
-                        f"🛡️ **BE Target (Move SL to Entry here):** `{be_target}`\n"
                         f"Rec Lot: `{rec_lot}` (1% Risk)"
                     )
 
@@ -573,7 +372,6 @@ async def signal_loop(app):
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
-    asyncio.create_task(hourly_heartbeat_loop(app))
 
 def main():
     loop = asyncio.new_event_loop()
@@ -583,12 +381,8 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(t_request).post_init(post_init).concurrent_updates(False).build()
 
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("off", off_command))
-    app.add_handler(CommandHandler("on", on_command))
-    app.add_handler(CommandHandler("clear", clear_command))
-    app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("about", about_command))
+    app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
 
     flask_thread = Thread(target=run_flask, daemon=True)
@@ -597,7 +391,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Professional Signal Engine Running 24/7...")
+    logging.info("Aura Quantum Demo Engine Running...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
