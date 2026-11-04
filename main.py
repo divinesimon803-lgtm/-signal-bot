@@ -298,14 +298,29 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
+    status_state = "ACTIVE 🟢" if bot_active else "PAUSED 🔴"
     text = (
-        f"📊 **Aura Quantum Status:** `Active (5 Pairs)`\n"
+        f"📊 **Aura Quantum Status:** `{status_state}`\n"
         f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
         f"• Balance: `${current_account_balance:.2f}`\n"
         f"• Circuit Breakers: `Disabled (Simons Law of Large Numbers Active)`"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
+
+async def off_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_active
+    if update.effective_user.id not in authorized_users:
+        return
+    bot_active = False
+    await update.message.reply_text("🔴 **Aura Quantum Engine Paused (/off)**\nScanning and signals are now suspended.", parse_mode="Markdown")
+
+async def on_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_active
+    if update.effective_user.id not in authorized_users:
+        return
+    bot_active = True
+    await update.message.reply_text("🟢 **Aura Quantum Engine Resumed (/on)**\nAutonomous scanning and signals are active again.", parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global current_account_balance
@@ -408,7 +423,7 @@ async def signal_loop(app):
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
-    asyncio.create_task(heartbeat_loop(app))  # Start the 3-hour heartbeat task
+    asyncio.create_task(heartbeat_loop(app))
 
 def main():
     loop = asyncio.new_event_loop()
@@ -420,6 +435,8 @@ def main():
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CommandHandler("off", off_command))
+    app.add_handler(CommandHandler("on", on_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
 
@@ -429,7 +446,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Aura Quantum Demo Engine Running (5 Pairs + Heartbeat)...")
+    logging.info("Aura Quantum Demo Engine Running (5 Pairs + On/Off Control)...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
