@@ -35,19 +35,17 @@ bot_active = True
 
 today_date = datetime.datetime.now(datetime.timezone.utc).date()
 
-# --- ASSET UNIVERSE (The 6 Core Pairs) ---
+# --- ASSET UNIVERSE (The 5 Core Pairs - ETH Removed) ---
 WEEKDAY_ASSETS = {
     "BTC-USD": "BTCUSD",
     "EURUSD=X": "EURUSD",
     "GBPUSD=X": "GBPUSD",
     "JPY=X": "USDJPY",
-    "GC=F": "XAUUSD",
-    "ETH-USD": "ETHUSD"
+    "GC=F": "XAUUSD"
 }
 
 WEEKEND_ASSETS = {
-    "BTC-USD": "BTCUSD",
-    "ETH-USD": "ETHUSD"
+    "BTC-USD": "BTCUSD"
 }
 
 TIMEFRAME_M15 = "15m"
@@ -290,7 +288,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Aura Quantum Demo Engine Active**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure mathematical Z-score mean reversion active.", 
+            f"🔓 **Aura Quantum Demo Engine Active (5-Asset Universe)**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure mathematical Z-score mean reversion active.", 
             parse_mode="Markdown"
         )
     else:
@@ -301,7 +299,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
     text = (
-        f"📊 **Aura Quantum Status:** `Active`\n"
+        f"📊 **Aura Quantum Status:** `Active (5 Pairs)`\n"
         f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
         f"• Balance: `${current_account_balance:.2f}`\n"
@@ -391,7 +389,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Aura Quantum Demo Engine Running...")
+    logging.info("Aura Quantum Demo Engine Running (5 Pairs)...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
