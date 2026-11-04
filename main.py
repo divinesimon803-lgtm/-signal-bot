@@ -307,6 +307,22 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global current_account_balance
+    if update.effective_user.id not in authorized_users:
+        return
+    args = context.args
+    if args:
+        try:
+            new_bal = float(args[0])
+            current_account_balance = new_bal
+            save_trade_history()
+            await update.message.reply_text(f"✅ **Balance Updated Successfully:** `${current_account_balance:.2f}`", parse_mode="Markdown")
+        except ValueError:
+            await update.message.reply_text("⚠️ Invalid format. Use: `/balance 100.00`", parse_mode="Markdown")
+    else:
+        await update.message.reply_text(f"💰 **Current Account Balance:** `${current_account_balance:.2f}`", parse_mode="Markdown")
+
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized_users:
         return
@@ -321,6 +337,28 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Format: `/clear WIN 0.50`", parse_mode="Markdown")
     else:
         await update.message.reply_text("⚠️ Format: `/clear WIN [pnl]` or `/clear LOSS [pnl]`", parse_mode="Markdown")
+
+# --- 3-HOUR HEARTBEAT LOOP (ALIVE CHECK) ---
+async def heartbeat_loop(app):
+    while True:
+        await asyncio.sleep(10800)  # Wait for 3 hours (3 * 60 * 60 seconds)
+        try:
+            if not bot_active:
+                continue
+            win_rate, wins, losses, profit_factor = get_quantitative_performance_metrics()
+            heartbeat_msg = (
+                f"💓 **Aura Quantum Heartbeat [SYSTEM ALIVE]**\n"
+                f"• Status: `Online & Scanning 5 Pairs`\n"
+                f"• Balance: `${current_account_balance:.2f}`\n"
+                f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
+                f"• Profit Factor: `{profit_factor:.2f}`\n"
+                f"*System is running autonomously.*"
+            )
+            target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
+            if target_user and authorized_users:
+                await app.bot.send_message(chat_id=target_user, text=heartbeat_msg, parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Heartbeat loop error: {e}")
 
 # --- BACKGROUND SIGNAL LOOP ---
 async def signal_loop(app):
@@ -370,6 +408,7 @@ async def signal_loop(app):
 
 async def post_init(app):
     asyncio.create_task(signal_loop(app))
+    asyncio.create_task(heartbeat_loop(app))  # Start the 3-hour heartbeat task
 
 def main():
     loop = asyncio.new_event_loop()
@@ -380,6 +419,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CallbackQueryHandler(button_click_handler))
 
@@ -389,7 +429,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Aura Quantum Demo Engine Running (5 Pairs)...")
+    logging.info("Aura Quantum Demo Engine Running (5 Pairs + Heartbeat)...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
