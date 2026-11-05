@@ -216,7 +216,7 @@ def get_strategy_signal(ticker):
     try:
         df = fetch_data(ticker, interval=TIMEFRAME_M15, period="10d")
         if df is None or len(df) < 50:
-            return None, None, None, None, None, None, 0.0
+            return None, None, None, None, None, None, None, 0.0
 
         c = df.iloc[-2]
         close_p = float(c['Close'])
@@ -232,37 +232,43 @@ def get_strategy_signal(ticker):
             sig = "SELL"
 
         if not sig:
-            return None, None, None, None, None, None, 0.0
+            return None, None, None, None, None, None, None, 0.0
 
-        # Dynamic Stop Loss and Take Profit based on ATR Volatility
+        # Dynamic Stop Loss and Take Profit based on ATR Volatility & Break-Even Shield Calculation
         if "EUR" in ticker or "GBP" in ticker or "USD" in ticker:
             entry = round(close_p, 4)
             sl_dist = atr * 1.5
+            pip_offset = 0.0015  # +15 pips Break-Even shield threshold
             if sig == "BUY":
                 sl = round(entry - sl_dist, 4)
                 tp = round(entry + (sl_dist * 2.0), 4)
+                be_target = round(entry + pip_offset, 4)
             else:
                 sl = round(entry + sl_dist, 4)
                 tp = round(entry - (sl_dist * 2.0), 4)
+                be_target = round(entry - pip_offset, 4)
         else:
             entry = round(close_p, 2)
             sl_dist = max(atr * 1.5, 50.0)
+            pip_offset = 15.0  # +15 points for gold/crypto
             if sig == "BUY":
                 sl = round(entry - sl_dist, 2)
                 tp = round(entry + (sl_dist * 2.0), 2)
+                be_target = round(entry + pip_offset, 2)
             else:
                 sl = round(entry + sl_dist, 2)
                 tp = round(entry - (sl_dist * 2.0), 2)
+                be_target = round(entry - pip_offset, 2)
 
         rec_lot = calculate_dynamic_lot(ticker, sl_dist)
         if rec_lot is None:
-            return None, None, None, None, None, None, 0.0
+            return None, None, None, None, None, None, None, 0.0
 
         quality_score = min(abs(z_score) * 35.0, 99.0)
-        return sig, entry, sl, tp, rec_lot, candle_time, quality_score
+        return sig, entry, sl, tp, be_target, rec_lot, candle_time, quality_score
     except Exception as e:
         logging.error(f"Signal calculation error for {ticker}: {e}")
-        return None, None, None, None, None, None, 0.0
+        return None, None, None, None, None, None, None, 0.0
 
 # --- TELEGRAM INTERACTION ---
 async def button_click_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -288,7 +294,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args and args[0] == BOT_PASSCODE:
         authorized_users.add(user_id)
         await update.message.reply_text(
-            f"🔓 **Aura Quantum Demo Engine Active (5-Asset Universe)**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure mathematical Z-score mean reversion active.", 
+            f"🔓 **Aura Quantum Demo Engine Active (5-Asset Universe)**\nBalance: `${current_account_balance:.2f}`\n\n*Rule:* Pure mathematical Z-score mean reversion & Break-Even Shield active.", 
             parse_mode="Markdown"
         )
     else:
@@ -304,7 +310,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
         f"• Profit Factor: `{profit_factor:.2f}`\n"
         f"• Balance: `${current_account_balance:.2f}`\n"
-        f"• Circuit Breakers: `Disabled (Simons Law of Large Numbers Active)`"
+        f"• Profit-Locking Protocol: `Break-Even Shield Enabled (+15 Pips)`"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -367,7 +373,7 @@ async def heartbeat_loop(app):
                 f"• Balance: `${current_account_balance:.2f}`\n"
                 f"• Win Rate: `{win_rate:.1f}%` ({wins}W/{losses}L)\n"
                 f"• Profit Factor: `{profit_factor:.2f}`\n"
-                f"*System is running autonomously.*"
+                f"*Autonomous profit-locking protection active.*"
             )
             target_user = list(authorized_users)[0] if authorized_users else TELEGRAM_CHAT_ID
             if target_user and authorized_users:
@@ -388,7 +394,7 @@ async def signal_loop(app):
             all_assets = {**WEEKDAY_ASSETS, **WEEKEND_ASSETS}
 
             for ticker, label in all_assets.items():
-                sig, entry, sl, tp, rec_lot, candle_time, quality_score = get_strategy_signal(ticker)
+                sig, entry, sl, tp, be_target, rec_lot, candle_time, quality_score = get_strategy_signal(ticker)
                 if sig is None:
                     continue
 
@@ -401,9 +407,10 @@ async def signal_loop(app):
                         f"⚡ **Aura Quantum Signal [Score: {quality_score:.0f}]**\n"
                         f"{label} {dir_icon} {sig}\n"
                         f"Entry: `{entry}`\n"
-                        f"SL: `{sl}`\n"
-                        f"TP: `{tp}`\n"
-                        f"Rec Lot: `{rec_lot}` (1% Risk)"
+                        f"SL: `{sl}` (1% Risk)\n"
+                        f"🛡️ **Break-Even Target:** `{be_target}` (+15 Pips -> Move SL to Entry)\n"
+                        f"TP: `{tp}` (Micro-Harvest Target)\n"
+                        f"Rec Lot: `{rec_lot}`"
                     )
 
                     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel", callback_data="post_to_channel")]])
@@ -446,7 +453,7 @@ def main():
     ping_thread = Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
 
-    logging.info("Aura Quantum Demo Engine Running (5 Pairs + On/Off Control)...")
+    logging.info("Aura Quantum Demo Engine Running (5 Pairs + Profit-Locking Logic)...")
     app.run_polling(drop_pending_updates=True, close_loop=False)
 
 if __name__ == "__main__":
