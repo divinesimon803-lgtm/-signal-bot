@@ -90,9 +90,9 @@ def calc_lot(ticker,sl_dist):
     rpl=pips*10.0
     if rpl<=0: return None
     return max(round(risk_dollars/rpl,2),0.01)
-def fetch(ticker):
+def fetch(ticker,interval="15m",period="10d"):
     try:
-        df=yf.download(tickers=ticker,period="10d",interval="15m",progress=False,timeout=15)
+        df=yf.download(tickers=ticker,period=period,interval=interval,progress=False,timeout=15)
         if df is None or df.empty: return None
         if isinstance(df.columns,pd.MultiIndex): df.columns=[c[0] for c in df.columns]
         df.columns=[str(c).capitalize() for c in df.columns]
@@ -110,16 +110,17 @@ def fetch(ticker):
         return df
     except: return None
 def get_signal(ticker):
-    df=fetch(ticker)
-    if df is None or len(df)<50: return None
-    c=df.iloc[-2]
+    df15=fetch(ticker,"15m","10d")
+    df1h=fetch(ticker,"60m","60d")
+    if df15 is None or len(df15)<50: return None
+    c=df15.iloc[-2]
     close_p=float(c['Close'])
     z=float(c['z_score']) if pd.notna(c['z_score']) else 0.0
     atr=float(c['atr14']) if pd.notna(c['atr14']) else 0.0
     sma50=float(c['sma50']) if pd.notna(c['sma50']) else close_p
     sma200=float(c['sma200']) if pd.notna(c['sma200']) else close_p
     adx=float(c['adx']) if pd.notna(c['adx']) else 15
-    candle=pd.to_datetime(df.index[-2])
+    candle=pd.to_datetime(df15.index[-2])
     sig=None
     if z<-2.0: sig="BUY"
     elif z>2.0: sig="SELL"
@@ -127,6 +128,13 @@ def get_signal(ticker):
     if adx>25: return None
     if sig=="SELL" and close_p>sma200 and sma50>sma200: return None
     if sig=="BUY" and close_p<sma200 and sma50<sma200: return None
+    if df1h is not None and len(df1h)>50:
+        h=df1h.iloc[-2]
+        hz=float(h['z_score']) if pd.notna(h['z_score']) else 0.0
+        hsma200=float(h['sma200']) if pd.notna(h['sma200']) else close_p
+        hclose=float(h['Close'])
+        if sig=="BUY" and hclose<hsma200 and hz>1.0: return None
+        if sig=="SELL" and hclose>hsma200 and hz<-1.0: return None
     if ticker=="JPY=X":
         entry=round(close_p,2); sl_dist=atr*1.5; be=round(entry+0.15,2) if sig=="BUY" else round(entry-0.15,2)
         sl=round(entry-sl_dist,2) if sig=="BUY" else round(entry+sl_dist,2)
@@ -140,7 +148,7 @@ def get_signal(ticker):
         sl=round(entry-sl_dist,4) if sig=="BUY" else round(entry+sl_dist,4)
         tp=round(entry+sl_dist*2.0,4) if sig=="BUY" else round(entry-sl_dist*2.0,4)
     score=min(abs(z)*35.0,99.0)
-    return {"sig":sig,"entry":entry,"sl":sl,"tp":tp,"be":be,"sl_dist":sl_dist,"candle":candle,"score":score}
+    return {"sig":sig,"entry":entry,"sl":sl,"tp":tp,"be":be,"sl_dist":sl_dist,"candle":candle,"score":score,"tf":"M15+H1"}
 flask_app=Flask(__name__)
 @flask_app.route('/')
 @flask_app.route('/health')
@@ -165,14 +173,14 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and context.args[0]==BOT_PASSCODE:
         authorized.add(update.effective_user.id)
         tier="Tier 1 Forex" if balance<100 else "Tier 2 + BTC"
-        await update.message.reply_text(f"🔓 **Aura Quantum PDF Build Active**\nBalance: `${balance:.2f}`\nUniverse: `{tier}`\nKill: `Per-Asset 5 Losses / Firm -5%`\nRisk: `1%`",parse_mode="Markdown")
+        await update.message.reply_text(f"🔓 **Aura Quantum NEW PLAN Active**\nBalance: `${balance:.2f}`\nUniverse: `{tier}`\nTF: `M15 + H1`\nKill: `Per-Asset 5 Losses / Firm -5%`\nRisk: `1%`",parse_mode="Markdown")
     else:
         await update.message.reply_text("🔒 Denied.",parse_mode="Markdown")
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in authorized: return
     halted_s=", ".join(halted.keys()) if halted else "None"
     per=" | ".join([f"{k}:{v}/5" for k,v in per_losses.items() if k in TIER1])
-    await update.message.reply_text(f"📊 **Status:** `{'PAUSED' if not bot_active or firm_halted else 'ACTIVE 🟢'}`\nBalance: `${balance:.2f}` | Day Start: `${day_start:.2f}`\nPer-Asset: `{per}`\nHalted: `{halted_s}`\nFirm: `{firm_reason or 'ARMED'}`\nBreak-Even: `+15 Pips ON`",parse_mode="Markdown")
+    await update.message.reply_text(f"📊 **Status:** `{'PAUSED' if not bot_active or firm_halted else 'ACTIVE 🟢'}`\nBalance: `${balance:.2f}` | Day Start: `${day_start:.2f}`\nPer-Asset: `{per}`\nHalted: `{halted_s}`\nFirm: `{firm_reason or 'ARMED'}`\nTF: `M15 + H1` | Break-Even: `+15 Pips ON`",parse_mode="Markdown")
 async def off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_active
     if update.effective_user.id not in authorized: return
@@ -217,7 +225,7 @@ async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg=f"🧹 Logged: `{ticker} {outcome}` ${pnl:.2f} | Bal: `${balance:.2f}` | Losses: {cnt}/5"
         if ticker in halted: msg+=f"\n🚨 PER-ASSET HALT: {ticker} halted (5 losses). Others still trading."
         if firm_halted: msg+=f"\n🚨 FIRM KILL: {firm_reason}"
-        if check_milestone(): msg+="\n🏆 MILESTONE $80: HALT & SWEEP $40"
+        if check_milestone(): msg+="\n🏆 MILESTONE $80 (300% NET): HALT & SWEEP $30 PROFIT. RETAIN $50 TO COMPOUND."
         await update.message.reply_text(msg,parse_mode="Markdown")
     except:
         await update.message.reply_text("Use: /clear EURUSD LOSS 0.20",parse_mode="Markdown")
@@ -233,7 +241,7 @@ async def signal_loop(app):
                 await asyncio.sleep(10); continue
             new_day()
             if check_milestone() and authorized:
-                await app.bot.send_message(chat_id=list(authorized)[0],text="🏆 **MILESTONE $80**\nHALT & SWEEP $40 TO SECURE. Retain $40.",parse_mode="Markdown")
+                await app.bot.send_message(chat_id=list(authorized)[0],text="🏆 **MILESTONE $80 (300% NET PROFIT)**\nHALT & SWEEP $30 PROFIT TO SECURE. Retain $50 to compound.",parse_mode="Markdown")
             assets=dict(TIER1)
             if balance>=100: assets[BTC]="BTCUSD"
             target=list(authorized)[0] if authorized else TELEGRAM_CHAT_ID
@@ -246,7 +254,7 @@ async def signal_loop(app):
                     last_signals[ticker]=cstr
                     lot=calc_lot(ticker,data["sl_dist"])
                     icon="🟢" if data["sig"]=="BUY" else "🔴"
-                    text=f"⚡ **Aura Quantum [Score: {data['score']:.0f}]**\n{label} {icon} {data['sig']}\nEntry: `{data['entry']}`\nSL: `{data['sl']}` (1% Risk | 1.5x ATR)\n🛡️ **Break-Even:** `{data['be']}` (+15 Pips -> SL to Entry)\nTP: `{data['tp']}` (2.0x ATR)\nLot: `{lot}`\nTrailing: `ON`"
+                    text=f"⚡ **Aura Quantum [Score: {data['score']:.0f}]**\n{label} {icon} {data['sig']} | TF: `M15+H1`\nEntry: `{data['entry']}`\nSL: `{data['sl']}` (1% Risk | 1.5x ATR)\n🛡️ **Break-Even:** `{data['be']}` (+15 Pips -> SL to Entry)\nTP: `{data['tp']}` (2.0x ATR)\nLot: `{lot}`\nTrailing: `ON`"
                     kb=InlineKeyboardMarkup([[InlineKeyboardButton("📢 Post to Channel",callback_data="post_to_channel")]])
                     if target and authorized:
                         await app.bot.send_message(chat_id=target,text=text,parse_mode="Markdown",reply_markup=kb)
@@ -271,7 +279,7 @@ def main():
     app.add_handler(CallbackQueryHandler(btn_handler))
     Thread(target=run_flask,daemon=True).start()
     Thread(target=ping_loop,daemon=True).start()
-    logging.info("Aura Quantum PDF Build Running")
+    logging.info("Aura Quantum NEW PLAN Running")
     app.run_polling(drop_pending_updates=True,close_loop=False)
 if __name__=="__main__":
     main()
