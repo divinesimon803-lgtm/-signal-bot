@@ -4,4 +4,3 @@ requests
 yfinance
 pandas
 ta
-websockets
