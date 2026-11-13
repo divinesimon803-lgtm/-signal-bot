@@ -68,6 +68,7 @@ firm_halted = False
 firm_reason = ""
 milestone_sent = False
 last_signals = {}
+active_trades = {}  # Tracks ongoing trades for break-even & trailing management
 authorized = set()
 history = []
 
@@ -244,13 +245,11 @@ def get_signal(ticker):
     if sig == "SELL" and hclose > hsma200 and hz < -1.0:
       return None
 
-  # Dynamic ATR Volatility Sizing (Step 7)
+  # Dynamic ATR Volatility Sizing & Break-Even Offset (Step 7 & 13)
   if ticker == "JPY=X":
     entry = round(close_p, 2)
     sl_dist = atr * 1.5
-    be = (
-        round(entry + 0.15, 2) if sig == "BUY" else round(entry - 0.15, 2)
-    )
+    be_offset = 0.15
     sl = round(entry - sl_dist, 2) if sig == "BUY" else round(entry + sl_dist, 2)
     tp = (
         round(entry + sl_dist * 2.0, 2)
@@ -260,7 +259,7 @@ def get_signal(ticker):
   elif ticker == "BTC-USD":
     entry = round(close_p, 2)
     sl_dist = max(atr * 1.5, 50.0)
-    be = round(entry + 150, 2) if sig == "BUY" else round(entry - 150, 2)
+    be_offset = 150.0
     sl = round(entry - sl_dist, 2) if sig == "BUY" else round(entry + sl_dist, 2)
     tp = (
         round(entry + sl_dist * 2.0, 2)
@@ -270,11 +269,7 @@ def get_signal(ticker):
   else:
     entry = round(close_p, 4)
     sl_dist = atr * 1.5
-    be = (
-        round(entry + 0.0015, 4)
-        if sig == "BUY"
-        else round(entry - 0.0015, 4)
-    )
+    be_offset = 0.0015
     sl = (
         round(entry - sl_dist, 4) if sig == "BUY" else round(entry + sl_dist, 4)
     )
@@ -290,11 +285,10 @@ def get_signal(ticker):
       "entry": entry,
       "sl": sl,
       "tp": tp,
-      "be": be,
+      "be_offset": be_offset,
       "sl_dist": sl_dist,
       "candle": candle,
       "score": score,
-      "tf": "M15+H1",
   }
 
 
@@ -372,7 +366,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
       f"📊 **Status:** `{'PAUSED' if not bot_active or firm_halted else 'ACTIVE'}`\nBalance:"
       f" `${balance:.2f}` | Day Start: `${day_start:.2f}`\nPer-Asset:"
       f" `{per}`\nHalted: `{halted_s}`\nFirm: `{firm_reason or 'ARMED'}`\nTF:"
-      f" `M15 + H1` | Break-Even: `+15 Pips ON`",
+      f" `M15 + H1` | **BE & Trailing Monitor:** `ACTIVE`",
       parse_mode="Markdown",
   )
 
@@ -399,19 +393,21 @@ async def on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  global bot_active, firm_halted, firm_reason, halted, per_losses, day_start
+  global bot_active, firm_halted, firm_reason, halted, per_losses, day_start, active_trades
   if update.effective_user.id not in authorized:
     return
   firm_halted = False
   firm_reason = ""
   halted = {}
+  active_trades = {}
   for k in per_losses:
     per_losses[k] = 0
   day_start = balance
   bot_active = True
   save()
   await update.message.reply_text(
-      "🔄 System Reset Complete. Counters cleared.", parse_mode="Markdown"
+      "🔄 System Reset Complete. Counters & active trades cleared.",
+      parse_mode="Markdown",
   )
 
 
@@ -455,6 +451,8 @@ async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
       )
       return
     cnt = record(ticker, outcome, pnl)
+    if ticker in active_trades:
+      del active_trades[ticker]
     history.append({
         "ticker": ticker,
         "outcome": outcome,
@@ -492,11 +490,103 @@ async def heartbeat(app):
       await app.bot.send_message(
           chat_id=list(authorized)[0],
           text=(
-              f"💓 Heartbeat | Bal: `${balance:.2f}` | Halted:"
+              f"💓 Heartbeat | Bal: `${balance:.2f}` | Active Trades:"
+              f" `{list(active_trades.keys())}` | Halted:"
               f" `{list(halted.keys())}`"
           ),
           parse_mode="Markdown",
       )
+
+
+async def trade_monitor_loop(app):
+  """Background loop that monitors active trades per asset,
+
+  triggers Break-Even alerts (+15 pips), and ratchets trailing stop-losses.
+  """
+  while True:
+    try:
+      if not bot_active or firm_halted or not authorized:
+        await asyncio.sleep(5)
+        continue
+
+      target = list(authorized)[0]
+      for ticker, trade in list(active_trades.items()):
+        df = fetch(ticker, interval="15m", period="1d")
+        if df is None or df.empty:
+          continue
+        current_price = float(df.iloc[-1]["Close"])
+        sig = trade["sig"]
+        entry = trade["entry"]
+        tp = trade["tp"]
+        be_offset = trade["be_offset"]
+
+        # Calculate current profit in pips / price distance
+        if sig == "BUY":
+          pips_diff = (current_price - entry) / (
+              0.01 if ticker == "JPY=X" else 0.0001
+          )
+          # Check Break-Even Alert (+15 pips)
+          if not trade["be_alerted"] and pips_diff >= 15.0:
+            trade["be_alerted"] = True
+            be_price = entry + be_offset
+            await app.bot.send_message(
+                chat_id=target,
+                text=(
+                    f"🛡️ **BREAK-EVEN ALERT**\nAsset:"
+                    f" `{trade['label']}`\nProfit reached `+15 pips`!\n👉 Move"
+                    f" your SL to Entry/Break-Even: `{be_price}`"
+                ),
+                parse_mode="Markdown",
+            )
+          # Trailing Profit Lock: ratchet SL up as price moves toward TP
+          if current_price > trade["current_sl"] + (be_offset * 2):
+            new_sl = round(trade["current_sl"] + be_offset, 4 if ticker != "JPY=X" else 2)
+            if new_sl < tp:
+              trade["current_sl"] = new_sl
+              await app.bot.send_message(
+                  chat_id=target,
+                  text=(
+                      f"🔒 **TRAILING LOCK UPDATE**\nAsset:"
+                      f" `{trade['label']}`\nPrice advancing toward TP.\n👉"
+                      f" Ratchet SL to: `{new_sl}`"
+                  ),
+                  parse_mode="Markdown",
+              )
+
+        elif sig == "SELL":
+          pips_diff = (entry - current_price) / (
+              0.01 if ticker == "JPY=X" else 0.0001
+          )
+          # Check Break-Even Alert (+15 pips)
+          if not trade["be_alerted"] and pips_diff >= 15.0:
+            trade["be_alerted"] = True
+            be_price = entry - be_offset
+            await app.bot.send_message(
+                chat_id=target,
+                text=(
+                    f"🛡️ **BREAK-EVEN ALERT**\nAsset:"
+                    f" `{trade['label']}`\nProfit reached `+15 pips`!\n👉 Move"
+                    f" your SL to Entry/Break-Even: `{be_price}`"
+                ),
+                parse_mode="Markdown",
+            )
+          # Trailing Profit Lock: ratchet SL down as price moves toward TP
+          if current_price < trade["current_sl"] - (be_offset * 2):
+            new_sl = round(trade["current_sl"] - be_offset, 4 if ticker != "JPY=X" else 2)
+            if new_sl > tp:
+              trade["current_sl"] = new_sl
+              await app.bot.send_message(
+                  chat_id=target,
+                  text=(
+                      f"🔒 **TRAILING LOCK UPDATE**\nAsset:"
+                      f" `{trade['label']}`\nPrice advancing toward TP.\n👉"
+                      f" Ratchet SL to: `{new_sl}`"
+                  ),
+                  parse_mode="Markdown",
+              )
+    except Exception as e:
+      logging.error(f"Trade monitor error: {e}")
+    await asyncio.sleep(20)
 
 
 async def signal_loop(app):
@@ -520,8 +610,8 @@ async def signal_loop(app):
         assets[BTC] = "BTCUSD"
       target = list(authorized)[0] if authorized else TELEGRAM_CHAT_ID
       for ticker, label in assets.items():
-        if ticker in halted:
-          continue
+        if ticker in halted or ticker in active_trades:
+          continue  # Per-asset isolation & single active trade monitoring per asset
         data = get_signal(ticker)
         if not data:
           continue
@@ -530,13 +620,27 @@ async def signal_loop(app):
           last_signals[ticker] = cstr
           lot = calc_lot(ticker, data["sl_dist"])
           icon = "🟢" if data["sig"] == "BUY" else "🔴"
+
+          # Register active trade for real-time break-even and trailing monitor
+          active_trades[ticker] = {
+              "label": label,
+              "sig": data["sig"],
+              "entry": data["entry"],
+              "tp": data["tp"],
+              "current_sl": data["sl"],
+              "be_offset": data["be_offset"],
+              "be_alerted": False,
+          }
+
+          # Clean, streamlined signal message format
           text = (
-              f"⚡ **Aura Quantum [Score: {data['score']:.0f}]**\n{label} {icon}"
-              f" {data['sig']} | TF: `M15+H1`\nEntry: `{data['entry']}`\nSL:"
-              f" `{data['sl']}` (1% Risk | 1.5x ATR)\n🛡️ **Break-Even:**"
-              f" `{data['be']}` (+15 Pips -> SL to Entry)\nTP: `{data['tp']}`"
-              f" (2.0x ATR)\nLot: `{lot}`\nTrailing: `ON`"
+              f"⚡ **Aura Quantum** [Score: {data['score']:.0f}]\n"
+              f"Asset: `{label}`\n"
+              f"Direction: `{data['sig']}` {icon}\n"
+              f"Lot: `{lot}`\n"
+              f"SL: `{data['sl']}` | TP: `{data['tp']}`"
           )
+
           kb = InlineKeyboardMarkup([[
               InlineKeyboardButton(
                   "📢 Post to Channel", callback_data="post_to_channel"
@@ -550,13 +654,14 @@ async def signal_loop(app):
                 reply_markup=kb,
             )
     except Exception as e:
-      logging.error(f"Loop error: {e}")
+      logging.error(f"Signal loop error: {e}")
       await asyncio.sleep(10)
     await asyncio.sleep(15)
 
 
 async def post_init(app):
   asyncio.create_task(signal_loop(app))
+  asyncio.create_task(trade_monitor_loop(app))
   asyncio.create_task(heartbeat(app))
 
 
@@ -578,14 +683,15 @@ def main():
   app.add_handler(CommandHandler("balance", balance_cmd))
   app.add_handler(CommandHandler("off", off_cmd))
   app.add_handler(CommandHandler("on", on_cmd))
-  app.add_handler(CommandHandler("reset", reset_cmd))
-  app.add_handler(CommandHandler("clear", clear_cmd))
+  app.add_handler(CommandHandler(
+      "reset", reset_cmd
+  ))  app.add_handler(CommandHandler("clear", clear_cmd))
   app.add_handler(CallbackQueryHandler(btn_handler))
 
   Thread(target=run_flask, daemon=True).start()
   Thread(target=ping_loop, daemon=True).start()
 
-  logging.info("Aura Quantum Sandbox Running Successfully")
+  logging.info("Aura Quantum Sandbox Running Successfully with BE & Trailing")
   app.run_polling(drop_pending_updates=True, close_loop=False)
 
 
