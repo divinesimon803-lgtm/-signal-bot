@@ -35,13 +35,19 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not BOT_PASSCODE:
       " TELEGRAM_CHAT_ID, BOT_PASSCODE)."
   )
 
-# Asset Universes (Tier 1 & Tier 2)
-TIER1 = {"EURUSD=X": "EURUSD", "GBPUSD=X": "GBPUSD", "JPY=X": "USDJPY"}
+# Asset Universes (Tier 1: 4 Majors & Tier 2: BTC)
+TIER1 = {
+    "EURUSD=X": "EURUSD",
+    "GBPUSD=X": "GBPUSD",
+    "JPY=X": "USDJPY",
+    "AUDUSD=X": "AUDUSD",
+}
 BTC = "BTC-USD"
 MAP = {
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
     "USDJPY": "JPY=X",
+    "AUDUSD": "AUDUSD=X",
     "BTCUSD": "BTC-USD",
 }
 
@@ -50,7 +56,13 @@ balance = 20.0
 bot_active = True
 day_start = 20.0
 today = datetime.datetime.now(datetime.timezone.utc).date()
-per_losses = {"EURUSD=X": 0, "GBPUSD=X": 0, "JPY=X": 0, "BTC-USD": 0}
+per_losses = {
+    "EURUSD=X": 0,
+    "GBPUSD=X": 0,
+    "JPY=X": 0,
+    "AUDUSD=X": 0,
+    "BTC-USD": 0,
+}
 halted = {}
 firm_halted = False
 firm_reason = ""
@@ -338,7 +350,7 @@ async def btn_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
   if context.args and context.args[0] == BOT_PASSCODE:
     authorized.add(update.effective_user.id)
-    tier = "Tier 1 Forex" if balance < 100 else "Tier 2 + BTC"
+    tier = "Tier 1 Forex (4 Majors)" if balance < 100 else "Tier 2 + BTC"
     await update.message.reply_text(
         f"🔓 **Aura Quantum Sandbox Active**\nBalance:"
         f" `${balance:.2f}`\nUniverse: `{tier}`\nTF: `M15 +"
