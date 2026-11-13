@@ -540,7 +540,9 @@ async def trade_monitor_loop(app):
             )
           # Trailing Profit Lock: ratchet SL up as price moves toward TP
           if current_price > trade["current_sl"] + (be_offset * 2):
-            new_sl = round(trade["current_sl"] + be_offset, 4 if ticker != "JPY=X" else 2)
+            new_sl = round(
+                trade["current_sl"] + be_offset, 4 if ticker != "JPY=X" else 2
+            )
             if new_sl < tp:
               trade["current_sl"] = new_sl
               await app.bot.send_message(
@@ -572,7 +574,9 @@ async def trade_monitor_loop(app):
             )
           # Trailing Profit Lock: ratchet SL down as price moves toward TP
           if current_price < trade["current_sl"] - (be_offset * 2):
-            new_sl = round(trade["current_sl"] - be_offset, 4 if ticker != "JPY=X" else 2)
+            new_sl = round(
+                trade["current_sl"] - be_offset, 4 if ticker != "JPY=X" else 2
+            )
             if new_sl > tp:
               trade["current_sl"] = new_sl
               await app.bot.send_message(
@@ -683,9 +687,8 @@ def main():
   app.add_handler(CommandHandler("balance", balance_cmd))
   app.add_handler(CommandHandler("off", off_cmd))
   app.add_handler(CommandHandler("on", on_cmd))
-  app.add_handler(CommandHandler(
-      "reset", reset_cmd
-  ))  app.add_handler(CommandHandler("clear", clear_cmd))
+  app.add_handler(CommandHandler("reset", reset_cmd))
+  app.add_handler(CommandHandler("clear", clear_cmd))
   app.add_handler(CallbackQueryHandler(btn_handler))
 
   Thread(target=run_flask, daemon=True).start()
